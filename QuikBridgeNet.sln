@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "QuikBridgeNet", "QuikBridgeNet\QuikBridgeNet.csproj", "{D4D89111-2646-4ED0-986E-8730E7D99278}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "QuikBridgeNetTest", "QuikBridgeNetTest\QuikBridgeNetTest.csproj", "{43422A2C-3E25-4107-BEB0-A990E08F6749}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "QuikBridgeNetApp", "QuikBridgeNetApp\QuikBridgeNetApp.csproj", "{6971CEF2-CAFB-40A6-8DFF-F3066834B5C5}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D4D89111-2646-4ED0-986E-8730E7D99278}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D4D89111-2646-4ED0-986E-8730E7D99278}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D4D89111-2646-4ED0-986E-8730E7D99278}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D4D89111-2646-4ED0-986E-8730E7D99278}.Release|Any CPU.Build.0 = Release|Any CPU
+		{43422A2C-3E25-4107-BEB0-A990E08F6749}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{43422A2C-3E25-4107-BEB0-A990E08F6749}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{43422A2C-3E25-4107-BEB0-A990E08F6749}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{43422A2C-3E25-4107-BEB0-A990E08F6749}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6971CEF2-CAFB-40A6-8DFF-F3066834B5C5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6971CEF2-CAFB-40A6-8DFF-F3066834B5C5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6971CEF2-CAFB-40A6-8DFF-F3066834B5C5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6971CEF2-CAFB-40A6-8DFF-F3066834B5C5}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
