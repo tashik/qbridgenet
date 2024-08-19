@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using Newtonsoft.Json;
 using QuikBridgeNet.Entities;
+using QuikBridgeNet.Entities.CommandData;
 
 namespace QuikBridgeNet;
 
@@ -107,17 +108,20 @@ public class JsonProtocolHandler
 
             int? bytesRead = sock?.EndReceive(ar);
 
-            if (bytesRead is not > 0 || state == null || ph == null) return;
-            if (ph._bufSz - ph._filledSz < bytesRead)
+            if (bytesRead > 0)
             {
-                var narr = new byte[(int)(ph._filledSz + bytesRead)];
-                ph._incomingBuf.CopyTo(narr, 0);
-                ph._incomingBuf = narr;
-                ph._bufSz = (int)(ph._filledSz + bytesRead);
+                if (ph._bufSz - ph._filledSz < bytesRead)
+                {
+                    var narr = new byte[(int)(ph._filledSz + bytesRead)];
+                    ph._incomingBuf.CopyTo(narr, 0);
+                    ph._incomingBuf = narr;
+                    ph._bufSz = (int)(ph._filledSz + bytesRead);
+                }
+
+                Buffer.BlockCopy(state.Buffer, 0, ph._incomingBuf, ph._filledSz, (int)bytesRead);
+                ph._filledSz += (int)bytesRead;
+                ph.ProcessBuffer();
             }
-            Buffer.BlockCopy(state.Buffer, 0, ph._incomingBuf, ph._filledSz, (int) bytesRead);
-            ph._filledSz += (int) bytesRead;
-            ph.ProcessBuffer();
             sock?.BeginReceive(state.Buffer, 0, StateObject.BufferSize, 0, ReceiveCallback, state);
         }
         catch (Exception e)
@@ -133,7 +137,7 @@ public class JsonProtocolHandler
     {
         int i;
         //Console.WriteLine("INCOMMING BUFFER: ");
-        //Console.WriteLine(Encoding.UTF8.GetString(_incommingBuf));
+        Console.WriteLine(Encoding.UTF8.GetString(_incomingBuf));
         for (i = 0; i < _filledSz; i++)
         {
             if (_incomingBuf[i] == '{')
@@ -180,13 +184,13 @@ public class JsonProtocolHandler
                     {
                         byte[] pdoc = new byte[i + 1];
                         Buffer.BlockCopy(_incomingBuf, 0, pdoc, 0, i + 1);
-                        //Console.WriteLine("PARSED DOC: ");
-                        //Console.WriteLine(Encoding.UTF8.GetString(pdoc));
+                        Console.WriteLine("PARSED DOC: ");
+                        Console.WriteLine(Encoding.UTF8.GetString(pdoc));
                         if (_filledSz - i - 1 > 0)
                         {
                             Buffer.BlockCopy(_incomingBuf, i+1, _incomingBuf, 0, _filledSz - i - 1);
-                            //Console.WriteLine("INCOMMING BUFFER AFTER PDOC CUT: ");
-                            //Console.WriteLine(Encoding.UTF8.GetString(_incommingBuf));
+                            Console.WriteLine("INCOMMING BUFFER AFTER PDOC CUT: ");
+                            Console.WriteLine(Encoding.UTF8.GetString(_incomingBuf));
                         }
                             
                         _filledSz -= i + 1;
@@ -278,7 +282,53 @@ public class JsonProtocolHandler
     {
         if (_weEnded) return;
 
-        string reqJson = JsonConvert.SerializeObject(req);
+        string reqJson = "{\"id\":" + req.id + ", \"type\":\"" + req.type + "\",\"data\":{";
+        reqJson += "\"method\":\"" + req.data.method + "\",";
+
+        if (req.data is JsonReqData commandData)
+        {
+            reqJson += "\"function\":\"" + commandData.function + "\",";
+            if (commandData.arguments is { Length: > 0 })
+            {
+                reqJson += "\"arguments\":[" + JsonConvert.SerializeObject(commandData.arguments) + "],";
+            }
+            else
+            {
+                reqJson += "\"arguments\":[],";
+            }
+
+            if (commandData.obj != null)
+            {
+                reqJson += "\"object\":\"" + commandData.obj + "\",";
+            }
+        }
+
+        if (req.data is JsonCommandDataSecurity secData)
+        {
+            if (secData.cl != "")
+            {
+                reqJson += "\"class\":\"" + secData.cl + "\",";
+            }
+            if (secData.cl != "")
+            {
+                reqJson += "\"security\":\"" + secData.security + "\",";
+            }
+        }
+
+        if (req.data is JsonCommandDataSubscribeParam paramData)
+        {
+            if (paramData.param != "")
+            {
+                reqJson += "\"param\":\"" + paramData.param + "\",";
+            }
+        }
+
+        if (reqJson.EndsWith(","))
+        {
+            reqJson = reqJson.Remove(reqJson.Length - 1);
+        }
+        reqJson += "}}";
+        //string reqJson = JsonConvert.SerializeObject(req);
         Console.WriteLine($"REQ: {reqJson}");
         _sock?.Send(Encoding.UTF8.GetBytes(reqJson));
     }

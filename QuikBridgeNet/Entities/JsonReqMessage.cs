@@ -1,3 +1,5 @@
+using QuikBridgeNet.Entities.CommandData;
+
 namespace QuikBridgeNet.Entities;
 
 public class JsonReqMessage

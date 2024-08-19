@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net.Sockets;
 using Newtonsoft.Json;
 using QuikBridgeNet.Entities;
+using QuikBridgeNet.Entities.CommandData;
 using QuikBridgeNet.Entities.MessageMeta;
 using QuikBridgeNet.Helpers;
 
@@ -74,6 +75,7 @@ public class QuikBridge
             data = reqData ?? data
         };
         _pHandler.SendReq(msg);
+        Console.WriteLine($"New message id: {msgId}");
         return msgId;
     }
 
