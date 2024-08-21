@@ -233,6 +233,42 @@ public class QuikBridge
         };
         return SendRequest(data, metaData);
     }
+
+    public int SendTransaction(TransactionBase transaction)
+    {
+        var transJson = JsonConvert.SerializeObject(transaction);
+        string[] args = { transJson };
+        var data = new JsonReqData()
+        {
+            method = "invoike",
+            function = "sendTransaction",
+            arguments = args
+        };
+
+        var metaData = new TransactionMeta()
+        {
+            MessageType = MessageType.UnsubscribeParam,
+            ClassCode = transaction.CLASSCODE,
+            Ticker = transaction.SECCODE,
+            Transaction = transaction
+        };
+        return SendRequest(data, metaData);
+    }
+
+    public int SetGlobalCallback(MessageType name)
+    {
+        var data = new JsonCommandDataCallback()
+        {
+            method = "register",
+            callback = name.GetDescription()
+        };
+
+        var metaData = new MetaData()
+        {
+            MessageType = name
+        };
+        return SendRequest(data, metaData);
+    }
     
 
     private Subscription? IsSubscribed(MessageType msgType, string ticker)

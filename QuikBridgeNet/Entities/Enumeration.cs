@@ -24,4 +24,6 @@ public enum MessageType
     SubscribeParam,
     [Description("unsubscribe_quotes_table")]
     UnsubscribeParam,
+    [Description("send_transaction")]
+    SendTransaction,
 }
