@@ -1,7 +1,7 @@
 using System.Net.Sockets;
 using System.Text;
-using System.Text.Json;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using QuikBridgeNet.Entities;
 using QuikBridgeNet.Entities.CommandData;
 using QuikBridgeNet.Events;
@@ -168,21 +168,18 @@ public class QuikBridgeProtocolHandler
         }
     }
 
-    private async Task OnDataReceived(JsonDocument jDoc)
+    private async Task OnDataReceived(JObject jDoc)
     {
-        JsonElement jobj = jDoc.RootElement;
-        
-        if (!jobj.TryGetProperty("id", out var idVal) || !jobj.TryGetProperty("type", out var typeVal))
+        if (jDoc["type"] == null)
         {
             Log.Warning("Unprocessable message format");
             return;
         }
         
-        if (!idVal.TryGetInt32(out var id))
-            id = -1;
+        var id = jDoc["id"] == null ? -1 : jDoc["id"]!.ToObject<int>();
+        var mtype = jDoc["type"]!.ToString();
         if (id >= 0)
         {
-            var mtype = typeVal.ToString();
             switch (mtype)
             {
                 case MsgTypeEnd:
@@ -192,20 +189,14 @@ public class QuikBridgeProtocolHandler
                 }
                 case MsgTypeVersion:
                 {
-                    var ver = 0;
-                    if (jobj.TryGetProperty("version", out var verVal))
-                    {
-                        if (!verVal.TryGetInt32(out ver))
-                            ver = 0;
-                    }
-
+                    var ver = jDoc["ver"]?.ToObject<int>() ?? 0;
                     VerArrived(ver);
                     return;
                 }
                 case MsgTypeReq:
                 case MsgTypeResp:
                 {
-                    jobj.TryGetProperty("data", out var data);
+                    var data = jDoc["data"] ?? null;
                     await OnNewMessage(id, mtype, data);
                     return;
                 }
@@ -221,7 +212,7 @@ public class QuikBridgeProtocolHandler
         Log.Debug($"Version of protocol: {ver}");
     }
     
-    private async Task OnNewMessage(int id, string type, JsonElement data)
+    private async Task OnNewMessage(int id, string type, JToken? data)
     {
         JsonMessage jReq = new JsonMessage()
         {
@@ -251,7 +242,7 @@ public class QuikBridgeProtocolHandler
         {
             try
             {
-                JsonDocument? jDoc = TryParseJson(accumulatedString);
+                JObject? jDoc = TryParseJson(accumulatedString);
 
                 if (jDoc == null)
                 {
@@ -277,7 +268,7 @@ public class QuikBridgeProtocolHandler
         }
     }
 
-    private JsonDocument? TryParseJson(string data)
+    private JObject? TryParseJson(string data)
     {
         try
         {
@@ -287,8 +278,8 @@ public class QuikBridgeProtocolHandler
                 return null; // Incomplete JSON
             }
 
-            string jsonString = data[..(jsonEndIndex + 1)];
-            return JsonDocument.Parse(jsonString);
+            var jsonString = data[..(jsonEndIndex + 1)];
+            return JObject.Parse(jsonString);
         }
         catch (JsonReaderException)
         {
@@ -318,6 +309,18 @@ public class QuikBridgeProtocolHandler
         }
 
         return -1; // No complete JSON found
+    }
+    
+    public void Finish()
+    {
+        JsonCommandRequest req = new JsonCommandRequest
+        {
+            id = 0,
+            type = "end"
+        };
+
+        var reqJson = JsonConvert.SerializeObject(req);
+        _clientSocket?.Send(Encoding.UTF8.GetBytes(reqJson));
     }
     
     public void StopClient()

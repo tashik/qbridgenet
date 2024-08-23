@@ -2,6 +2,7 @@ using System.Globalization;
 using Newtonsoft.Json;
 using QuikBridgeNet.Entities;
 using QuikBridgeNet.Events;
+using QuikBridgeNet.Helpers;
 using Serilog;
 
 namespace QuikBridgeNet.EventHandlers;
@@ -23,28 +24,29 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
         
         if (!_messageRegistry.TryGetMetadata(msg.id, out var newMessage)) return Task.CompletedTask;
         if (newMessage == null) return Task.CompletedTask;
-        Console.WriteLine("resp arrived with message id {0} to function {1} for ticker {2}", newMessage.Id, newMessage.Method, newMessage.Ticker);
+        Log.Debug("resp method is {0}", newMessage.Method);
 
         switch (newMessage.MessageType)
         {
             case MessageType.Classes:
                 List<string> classes = new();
-                msg.body.TryGetProperty("result", out var rslt);
-                foreach (var res in rslt.EnumerateArray())
+                var rslt = msg.body["result"] ?? null;
+                var classData = rslt?.ToObject<List<string>>();
+                if (classData != null)
                 {
-                    var c = res.GetString();
-
-                    if (c == null || !c.Contains((','))) continue;
-                    var cl = c.Split(',').ToList();
-                    classes.AddRange(cl);
-
+                    foreach (var cl in from c in classData where c.Contains(',') select c.Split(',').ToList())
+                    {
+                        classes.AddRange(cl);
+                    }
                 }
-
                 _eventAggregator.RaiseInstrumentCLassesUpdateEvent(this, classes);
+                break;
+            default:
+                Log.Information("No need to fire global event for message of type " + newMessage.MessageType.GetDescription());
                 break;
         }
         
-        switch (newMessage.Method)
+        /*switch (newMessage.Method)
         {
             case "getQuoteLevel2":
             {
@@ -78,7 +80,7 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
             }
             default:
                 return Task.CompletedTask;
-        }
+        }*/
         
         return Task.CompletedTask;
     }

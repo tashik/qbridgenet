@@ -38,9 +38,16 @@ class Program
             Log.Information("Instrument classes number arrived: {NumClasses}", eventArgs.Count);
         };
         
+        globalEventAggregator.InstrumentParameterUpdateEvent += (sender, eventArgs) =>
+        {
+            Log.Information("Instrument parameter {Name} current value {Val} ", eventArgs.ParamName, eventArgs.ParamValue);
+        };
+        
         await client.StartAsync(host, port, cts.Token);
 
         await client.GetClassesList();
+
+        await client.SubscribeToQuotesTableParams("SPBFUT", "SiU4", "LAST");
         Console.WriteLine("Press any key to stop...");
         Console.ReadKey();
 
