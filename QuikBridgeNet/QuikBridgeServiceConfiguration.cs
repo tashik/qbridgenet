@@ -13,7 +13,7 @@ public static class QuikBridgeServiceConfiguration
     {
         var serviceCollection = new ServiceCollection();
 
-        // Register services and event handlers
+        serviceCollection.AddSingleton<QuikBridgeGlobalEventAggregator>();
         serviceCollection.AddSingleton<ILogger>(provider => new LoggerConfiguration()
             .WriteTo.Console()
             .CreateLogger());

@@ -9,10 +9,12 @@ namespace QuikBridgeNet.EventHandlers;
 public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
 {
     private readonly MessageRegistry _messageRegistry;
+    private readonly QuikBridgeGlobalEventAggregator _eventAggregator;
     
-    public RespArrivedEventHandler(MessageRegistry messageRegistry)
+    public RespArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeGlobalEventAggregator globalEventAggregator)
     {
         _messageRegistry = messageRegistry;
+        _eventAggregator = globalEventAggregator;
     }
     public Task HandleAsync(RespArrivedEvent domainEvent)
     {
@@ -23,6 +25,25 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
         if (newMessage == null) return Task.CompletedTask;
         Console.WriteLine("resp arrived with message id {0} to function {1} for ticker {2}", newMessage.Id, newMessage.Method, newMessage.Ticker);
 
+        switch (newMessage.MessageType)
+        {
+            case MessageType.Classes:
+                List<string> classes = new();
+                msg.body.TryGetProperty("result", out var rslt);
+                foreach (var res in rslt.EnumerateArray())
+                {
+                    var c = res.GetString();
+
+                    if (c == null || !c.Contains((','))) continue;
+                    var cl = c.Split(',').ToList();
+                    classes.AddRange(cl);
+
+                }
+
+                _eventAggregator.RaiseInstrumentCLassesUpdateEvent(this, classes);
+                break;
+        }
+        
         switch (newMessage.Method)
         {
             case "getQuoteLevel2":

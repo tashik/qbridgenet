@@ -1,4 +1,3 @@
-using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using QuikBridgeNet.Entities;
@@ -20,8 +19,8 @@ public class QuikBridge
     private List<Subscription> Subscriptions { get; set; }
 
     private readonly MessageRegistry _messageRegistry;
-    
-    private readonly QuikBridgeEventDispatcher _eventDispatcher;
+
+    private readonly IServiceProvider _serviceProvider;
     
     #endregion
     
@@ -29,8 +28,8 @@ public class QuikBridge
 
     public QuikBridge(IServiceProvider serviceProvider)
     {
-        _eventDispatcher = serviceProvider.GetRequiredService<QuikBridgeEventDispatcher>();
-        _pHandler = new QuikBridgeProtocolHandler(_eventDispatcher);
+        _serviceProvider = serviceProvider;
+        _pHandler = new QuikBridgeProtocolHandler(serviceProvider.GetRequiredService<QuikBridgeEventDispatcher>());
 
         Subscriptions = new List<Subscription>();
         _messageRegistry = serviceProvider.GetRequiredService<MessageRegistry>();
@@ -43,6 +42,11 @@ public class QuikBridge
     #endregion
     
     #region Methods
+    
+    public QuikBridgeGlobalEventAggregator GetGlobalEventAggregator()
+    {
+        return _serviceProvider.GetRequiredService<QuikBridgeGlobalEventAggregator>();
+    }
 
     public async Task StartAsync(string host, int port, CancellationToken cancellationToken)
     {
@@ -300,13 +304,13 @@ public class QuikBridge
         
         Subscriptions.Add(newSubscription);
         RegisterRequest(req.id, "Subscribe_Level_II_Quotes", newSubscription);
-        Console.WriteLine("subscription request is sent with message id {0} for ticker {1}", msgId, ticker);
+        Log.Debug("subscription request is sent with message id {0} for ticker {1}", msgId, ticker);
         await _pHandler.SendReqAsync(req);
     }
 
     private void RegisterRequest(int id, string methodName, MetaData data)
     {
-        if (_messageRegistry.TryGetMetadata(id, out var m)) return;
+        if (_messageRegistry.TryGetMetadata(id, out var _)) return;
 
         var qMessage = new QMessage()
         {
@@ -315,18 +319,22 @@ public class QuikBridge
             MessageType = data.MessageType
         };
 
-        if (data is Subscription subscription)
+        switch (data)
         {
-            if (subscription.Ticker != "")
+            case Subscription subscription:
             {
-                qMessage.Ticker = subscription.Ticker;
+                if (subscription.Ticker != "")
+                {
+                    qMessage.Ticker = subscription.Ticker;
+                }
+
+                break;
             }
+            case DatasourceCallback ds:
+                qMessage.DataSource = ds.DataSource;
+                break;
         }
 
-        if (data is DatasourceCallback ds)
-        {
-            qMessage.DataSource = ds.DataSource;
-        }
         _messageRegistry.RegisterMessage(id, qMessage);
     }
 
@@ -349,7 +357,7 @@ public class QuikBridge
             }
         };
         RegisterRequest(req.id, "Unsubscribe_Level_II_Quotes", subscription);
-        Console.WriteLine("subscription cancellation is sent with message id {0} for ticker {1}", req.id, ticker);
+        Log.Debug("subscription cancellation is sent with message id {0} for ticker {1}", req.id, ticker);
         await _pHandler.SendReqAsync(req);
         Subscriptions.Remove(subscription);
     }

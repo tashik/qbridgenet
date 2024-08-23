@@ -1,8 +1,5 @@
-﻿using System.Net.Sockets;
-using Microsoft.Extensions.DependencyInjection;
+﻿using Microsoft.Extensions.DependencyInjection;
 using QuikBridgeNet;
-using QuikBridgeNet.EventHandlers;
-using QuikBridgeNet.Events;
 using Serilog;
 
 class Program
@@ -15,10 +12,6 @@ class Program
         QuikBridgeServiceConfiguration.ConfigureServices();
         
         var serviceProvider = new ServiceCollection()
-            .AddSingleton<Socket>(provider => new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
-            .AddSingleton<MessageRegistry>()
-            .AddSingleton<QuikBridgeEventDispatcher>()
-            .AddTransient<IDomainEventHandler<RespArrivedEvent>, RespArrivedEventHandler>()
             .AddSingleton<QuikBridge>(provider =>
             {
                 var bridge = new QuikBridge(QuikBridgeServiceConfiguration.ServiceProvider);
@@ -36,6 +29,14 @@ class Program
             .MinimumLevel.Debug() // Adjust as needed
             .WriteTo.Console()
             .CreateLogger();
+        
+        var globalEventAggregator = client.GetGlobalEventAggregator();
+
+        // Subscribe to the global events
+        globalEventAggregator.InstrumentCLassesUpdateEvent += (sender, eventArgs) =>
+        {
+            Log.Information("Instrument classes number arrived: {NumClasses}", eventArgs.Count);
+        };
         
         await client.StartAsync(host, port, cts.Token);
 
