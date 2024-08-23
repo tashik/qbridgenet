@@ -14,9 +14,9 @@ public class Offer
 
 public class OrderBook
 {
-    public IList<Bid> bid { get; set; }
+    public IList<Bid>? bid { get; set; }
     public string bid_count { get; set; } = "0";
-    public IList<Offer> offer { get; set; }
+    public IList<Offer>? offer { get; set; }
     public string offer_count { get; set; } = "0";
 
     public OrderBook()

@@ -1,3 +1,4 @@
+using QuikBridgeNet.Entities;
 using QuikBridgeNet.Events;
 using Serilog;
 
@@ -22,6 +23,9 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
 
         var methodToken = domainEvent.Req.body?["function"] ?? domainEvent.Req.body?["method"];
         var method = methodToken?.ToString();
+        
+        var secCode = domainEvent.Req.body?["security"]?.ToString();
+        var classCode = domainEvent.Req.body?["class"]?.ToString();
 
         switch (method)
         {
@@ -29,10 +33,23 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
                 var paramName = domainEvent.Req.body?["param"]?.ToString();
                 var valueToken = domainEvent.Req.body?["value"];
                 var value = valueToken?.ToString();
-                var secCode = domainEvent.Req.body?["security"]?.ToString();
-                var classCode = domainEvent.Req.body?["class"]?.ToString();
+                
 
                 _eventAggregator.RaiseInstrumentParameterUpdateEvent(this, secCode, classCode, paramName, value);
+                break;
+            case "quotesChange":
+                var quotesToken = domainEvent.Req.body?["quotes"];
+
+                if (quotesToken != null)
+                {
+                    var quotes = quotesToken.ToString();
+                    var orderBook = quotesToken.ToObject<OrderBook>();
+                    if (orderBook != null)
+                    {
+                        _eventAggregator.RaiseOrderbookUpdateEvent(this, secCode, classCode, orderBook);
+                    }
+                }
+
                 break;
                 /*param_name = data["param"]
                 param_value = data["value"]

@@ -43,11 +43,19 @@ class Program
             Log.Information("Instrument parameter {Name} current value {Val} ", eventArgs.ParamName, eventArgs.ParamValue);
         };
         
+        globalEventAggregator.OrderbookUpdateEvent += (sender, eventArgs) =>
+        {
+            Log.Information("Orderbook: bids number {Bids}; asks number {Offers} ", eventArgs.OrderBook?.bid_count, eventArgs.OrderBook?.offer_count);
+        };
+        
         await client.StartAsync(host, port, cts.Token);
 
         await client.GetClassesList();
 
         await client.SubscribeToQuotesTableParams("SPBFUT", "SiU4", "LAST");
+
+        await client.SubscribeToOrderBook( "SPBFUT", "SiU4");
+        
         Console.WriteLine("Press any key to stop...");
         Console.ReadKey();
 
