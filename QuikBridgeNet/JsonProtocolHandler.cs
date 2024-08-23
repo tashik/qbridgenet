@@ -8,6 +8,7 @@ using QuikBridgeNet.Entities.CommandData;
 
 namespace QuikBridgeNet;
 
+// deprecated, to be removed
 public class JsonProtocolHandler
 {
     private Socket? _sock;

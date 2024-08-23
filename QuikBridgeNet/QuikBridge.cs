@@ -1,10 +1,11 @@
 using System.Globalization;
-using System.Net.Sockets;
+using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using QuikBridgeNet.Entities;
 using QuikBridgeNet.Entities.CommandData;
 using QuikBridgeNet.Entities.MessageMeta;
 using QuikBridgeNet.Helpers;
+using Serilog;
 
 namespace QuikBridgeNet;
 
@@ -12,35 +13,27 @@ public class QuikBridge
 {
     #region Fields
     
-    private readonly JsonProtocolHandler _pHandler;
+    private readonly QuikBridgeProtocolHandler _pHandler;
 
     private readonly MessageIndexer _msgIndexer;
 
     private List<Subscription> Subscriptions { get; set; }
 
-    private readonly Dictionary<int, QMessage> _messageRegistry;
+    private readonly MessageRegistry _messageRegistry;
+    
+    private readonly QuikBridgeEventDispatcher _eventDispatcher;
     
     #endregion
     
     #region Constructors
 
-    public QuikBridge(string host, int port)
+    public QuikBridge(IServiceProvider serviceProvider)
     {
-        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        _pHandler = new JsonProtocolHandler(socket);
-        _pHandler.Connect(host, port);
-
-        if (!IsConnected())
-        {
-            _pHandler.Finish();
-        }
-
-        _pHandler.RespArrived += OnResp;
-        _pHandler.ReqArrived += OnReq;
-        _pHandler.ConnectionClose += OnDisconnect;
+        _eventDispatcher = serviceProvider.GetRequiredService<QuikBridgeEventDispatcher>();
+        _pHandler = new QuikBridgeProtocolHandler(_eventDispatcher);
 
         Subscriptions = new List<Subscription>();
-        _messageRegistry = new Dictionary<int, QMessage>();
+        _messageRegistry = serviceProvider.GetRequiredService<MessageRegistry>();
         
         _msgIndexer = new MessageIndexer();
         
@@ -51,12 +44,12 @@ public class QuikBridge
     
     #region Methods
 
-    public bool IsConnected()
+    public async Task StartAsync(string host, int port, CancellationToken cancellationToken)
     {
-        return _pHandler.Connected;
+        await _pHandler.StartClientAsync(host, port, cancellationToken);
     }
 
-    private int SendRequest(JsonCommandData data, MetaData metaData)
+    private async Task<int> SendRequest(JsonCommandData data, MetaData metaData)
     {
         var msgId = _msgIndexer.GetIndex();
         var method = data.method;
@@ -74,28 +67,27 @@ public class QuikBridge
             type = MessageType.Req.GetDescription(),
             data = reqData ?? data
         };
-        _pHandler.SendReq(msg);
-        Console.WriteLine($"New message id: {msgId}");
+        await _pHandler.SendReqAsync(msg);
+        Log.Debug($"New message id: {msgId}");
         return msgId;
     }
 
-
-    public int GetClassesList()
+    public async Task<int> GetClassesList()
     {
         var data = new JsonReqData()
         {
             method = "invoke",
             function = "getClassesList"
         };
-        return SendRequest(data, new MetaData() { MessageType = MessageType.Classes });
+        return await SendRequest(data, new MetaData() { MessageType = MessageType.Classes });
     }
 
-    public int CreateDs(string classCode, string secCode, string interval)
+    public async Task<int> CreateDs(string classCode, string secCode, string interval)
     {
         string[] args = {classCode, secCode, interval};
         var data = new JsonReqData()
         {
-            method = "invoke",
+            method = "invoke", 
             function = "getClassesList",
             arguments = args
         };
@@ -106,10 +98,10 @@ public class QuikBridge
             ClassCode = classCode,
             Interval = interval
         };
-        return SendRequest(data, metaData);
+        return await SendRequest(data, metaData);
     }
 
-    public int SetDsUpdateCallback(object datasource, Func<string, string, int>? callback = null)
+    public async Task<int> SetDsUpdateCallback(object datasource, Func<string, string, int>? callback = null)
     {
         string jsonArguments = "{\"type\": \"callable\", \"function\": \"on_update\"}";
         string[] args = {jsonArguments};
@@ -126,10 +118,10 @@ public class QuikBridge
             DataSource = datasource,
             Callback = callback
         };
-        return SendRequest(data, metaData);
+        return await SendRequest(data, metaData);
     }
 
-    public int GetBar(object datasource, MessageType barFunc, int barIndex)
+    public async Task<int> GetBar(object datasource, MessageType barFunc, int barIndex)
     {
         string[] args = {Convert.ToString(barIndex)};
         var data = new JsonReqData()
@@ -144,10 +136,10 @@ public class QuikBridge
             MessageType = barFunc,
             DataSource = datasource
         };
-        return SendRequest(data, metaData);
+        return await SendRequest(data, metaData);
     }
 
-    public int CloseDs(object? datasource)
+    public async Task<int> CloseDs(object? datasource)
     {
         if (datasource == null) return 0;
         var data = new JsonReqData()
@@ -161,10 +153,10 @@ public class QuikBridge
             MessageType = MessageType.DatasourceClose,
             DataSource = datasource
         };
-        return SendRequest(data, metaData);
+        return await SendRequest(data, metaData);
     }
 
-    public int SubscribeToOrderBook(string classCode, string secCode)
+    public async Task<int> SubscribeToOrderBook(string classCode, string secCode)
     {
         var data = new JsonCommandDataSubscribeQuotes()
         {
@@ -178,10 +170,10 @@ public class QuikBridge
             ClassCode = classCode,
             Ticker = secCode
         };
-        return SendRequest(data, metaData);
+        return await SendRequest(data, metaData);
     }
 
-    public int UnsubscribeToOrderBook(string classCode, string secCode)
+    public async Task<int> UnsubscribeToOrderBook(string classCode, string secCode)
     {
         var data = new JsonCommandDataSubscribeQuotes()
         {
@@ -195,10 +187,10 @@ public class QuikBridge
             ClassCode = classCode,
             Ticker = secCode
         };
-        return SendRequest(data, metaData);
+        return await SendRequest(data, metaData);
     }
 
-    public int SubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
+    public async Task<int> SubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
     {
         var data = new JsonCommandDataSubscribeParam()
         {
@@ -213,10 +205,10 @@ public class QuikBridge
             ClassCode = classCode,
             Ticker = secCode
         };
-        return SendRequest(data, metaData);
+        return await SendRequest(data, metaData);
     }
 
-    public int UnsubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
+    public async Task<int> UnsubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
     {
         var data = new JsonCommandDataSubscribeParam()
         {
@@ -231,10 +223,10 @@ public class QuikBridge
             ClassCode = classCode,
             Ticker = secCode
         };
-        return SendRequest(data, metaData);
+        return await SendRequest(data, metaData);
     }
 
-    public int SendTransaction(TransactionBase transaction)
+    public async Task<int> SendTransaction(TransactionBase transaction)
     {
         var transJson = JsonConvert.SerializeObject(transaction);
         string[] args = { transJson };
@@ -252,10 +244,10 @@ public class QuikBridge
             Ticker = transaction.SECCODE,
             Transaction = transaction
         };
-        return SendRequest(data, metaData);
+        return await SendRequest(data, metaData);
     }
 
-    public int SetGlobalCallback(MessageType name)
+    public async Task<int> SetGlobalCallback(MessageType name)
     {
         var data = new JsonCommandDataCallback()
         {
@@ -267,7 +259,7 @@ public class QuikBridge
         {
             MessageType = name
         };
-        return SendRequest(data, metaData);
+        return await SendRequest(data, metaData);
     }
     
 
@@ -276,7 +268,7 @@ public class QuikBridge
         return Subscriptions.FindLast(item => item.Ticker == ticker && item.MessageType == msgType);
     }
 
-    public void SubscribeOrderBook(string ticker, string classCode)
+    public async Task SubscribeOrderBook(string ticker, string classCode)
     {
         if (IsSubscribed(MessageType.OrderBook, ticker) != null)
         {
@@ -309,12 +301,12 @@ public class QuikBridge
         Subscriptions.Add(newSubscription);
         RegisterRequest(req.id, "Subscribe_Level_II_Quotes", newSubscription);
         Console.WriteLine("subscription request is sent with message id {0} for ticker {1}", msgId, ticker);
-        _pHandler.SendReq(req);
+        await _pHandler.SendReqAsync(req);
     }
 
     private void RegisterRequest(int id, string methodName, MetaData data)
     {
-        if (_messageRegistry.ContainsKey(id)) return;
+        if (_messageRegistry.TryGetMetadata(id, out var m)) return;
 
         var qMessage = new QMessage()
         {
@@ -335,10 +327,10 @@ public class QuikBridge
         {
             qMessage.DataSource = ds.DataSource;
         }
-        _messageRegistry.Add(id, qMessage);
+        _messageRegistry.RegisterMessage(id, qMessage);
     }
 
-    public void Unsubscribe(MessageType msgType, string ticker)
+    public async Task Unsubscribe(MessageType msgType, string ticker)
     {
         var subscription = IsSubscribed(msgType, ticker);
         if (subscription == null) return;
@@ -358,70 +350,14 @@ public class QuikBridge
         };
         RegisterRequest(req.id, "Unsubscribe_Level_II_Quotes", subscription);
         Console.WriteLine("subscription cancellation is sent with message id {0} for ticker {1}", req.id, ticker);
-        _pHandler.SendReq(req);
+        await _pHandler.SendReqAsync(req);
         Subscriptions.Remove(subscription);
     }
 
-    private void OnReq(JsonMessage msg)
+    public void Finish()
     {
-        Console.WriteLine("msg arrived with message id " + msg.id);
+        _pHandler.StopClient();
     }
-
-    private void OnResp(JsonMessage msg)
-    {
-        Console.WriteLine("resp arrived with message id {0}", msg.id);
-        if (!_messageRegistry.TryGetValue(msg.id, out var newMessage)) return;
-
-        Console.WriteLine("resp arrived with message id {0} to function {1} for ticker {2}", newMessage.Id, newMessage.Method, newMessage.Ticker);
-
-        switch (newMessage.Method)
-        {
-            case "getQuoteLevel2":
-            {
-                try
-                {
-                    msg.body.TryGetProperty("result", out var result);
-                    foreach (var res in result.EnumerateArray())
-                    {
-                        string jsonStr = res.GetRawText();
-                        var snapshot = JsonConvert.DeserializeObject<OrderBook>(jsonStr);
-
-                        if (snapshot != null && snapshot.bid_count != "" && snapshot.offer_count != "")
-                        {
-                            double.TryParse(snapshot.bid_count, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var bidsCount);
-                            double.TryParse(snapshot.offer_count, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var offersCount);
-                            if (bidsCount > 0 && offersCount > 0)
-                                OrderBookUpdate?.Invoke(newMessage.Ticker, newMessage.MessageType, snapshot);
-                        }
-                        
-                    }
-                    
-                }
-                catch (Exception e)
-                {
-                    Console.WriteLine("Error on Json Convert {0}", e.Message);
-                }
-
-                break;
-            }
-            default:
-                return;
-        }
-    }
-
-    private void OnDisconnect()
-    {
-    }
-    
-    #endregion
-    
-    #region Delegates and events
-
-    /// <summary> Обработчик события разрыва подключения </summary>
-    public delegate void OrderBookUpdateEventHandler(string ticker, MessageType msgType, OrderBook snapshot);
-
-    /// <summary> Событие прихода нового сообщения </summary>
-    public event OrderBookUpdateEventHandler? OrderBookUpdate;
     
     #endregion
 }
