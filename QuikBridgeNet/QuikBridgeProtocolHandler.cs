@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Text;
 using Newtonsoft.Json;
@@ -24,9 +25,19 @@ public class QuikBridgeProtocolHandler
     
     private readonly QuikBridgeEventDispatcher _eventDispatcher;
 
+    private DatasourceCallbackReceived? _datasourceCallbackReceived;
+    
+    private readonly BlockingCollection<JsonMessage> _dataQueue = new();
+
     public QuikBridgeProtocolHandler(QuikBridgeEventDispatcher eventDispatcher)
     {
         _eventDispatcher = eventDispatcher;
+        Task.Run(ProcessQueue);
+    }
+    
+    public void RegisterDataSourceCallback(DatasourceCallbackReceived callback)
+    {
+        _datasourceCallbackReceived = callback;
     }
 
     public async Task StartClientAsync(string host, int port, CancellationToken cancellationToken)
@@ -44,6 +55,14 @@ public class QuikBridgeProtocolHandler
         catch (Exception e)
         {
             Log.Error(e, "Error in StartClientAsync");
+        }
+    }
+    
+    private void ProcessQueue()
+    {
+        foreach (var data in _dataQueue.GetConsumingEnumerable())
+        {
+            _datasourceCallbackReceived?.Invoke(data);
         }
     }
 
@@ -223,7 +242,16 @@ public class QuikBridgeProtocolHandler
         switch (type)
         {
             case MsgTypeReq:
-                await _eventDispatcher.DispatchAsync(new ReqArrivedEvent(jReq));
+                _ = SendMessageAsync("{\"id\": " + id + ", \"type\": \"ans\", \"data\": {\"method\": \"return\", \"result\": true}}");
+                var obj = jReq.body?["object"];
+                if (obj != null)
+                {
+                    _dataQueue.Add(jReq);
+                }
+                else
+                {
+                    await _eventDispatcher.DispatchAsync(new ReqArrivedEvent(jReq));
+                }
                 break;
             case MsgTypeResp:
                 await _eventDispatcher.DispatchAsync(new RespArrivedEvent(jReq));
@@ -246,11 +274,10 @@ public class QuikBridgeProtocolHandler
 
                 if (jDoc == null)
                 {
-                    // No complete JSON object, continue accumulating data
+                    // Incomplete JSON
                     break;
                 }
-
-                // Process the complete JSON object
+                
                 Log.Debug("RESP: " + accumulatedString);
                 await OnDataReceived(jDoc);
                 
@@ -262,7 +289,7 @@ public class QuikBridgeProtocolHandler
             }
             catch (JsonReaderException)
             {
-                // If parsing fails, it likely indicates an incomplete JSON object
+                // Incomplete JSON
                 break;
             }
         }

@@ -8,6 +8,8 @@ using Serilog;
 
 namespace QuikBridgeNet;
 
+public delegate void DatasourceCallbackReceived(JsonMessage jMsg);
+
 public class QuikBridge
 {
     #region Fields
@@ -15,8 +17,6 @@ public class QuikBridge
     private readonly QuikBridgeProtocolHandler _pHandler;
 
     private readonly MessageIndexer _msgIndexer;
-
-    private List<Subscription> Subscriptions { get; set; }
 
     private readonly MessageRegistry _messageRegistry;
 
@@ -29,23 +29,21 @@ public class QuikBridge
     public QuikBridge(IServiceProvider serviceProvider)
     {
         _serviceProvider = serviceProvider;
+        
         _pHandler = new QuikBridgeProtocolHandler(serviceProvider.GetRequiredService<QuikBridgeEventDispatcher>());
-
-        Subscriptions = new List<Subscription>();
+        
         _messageRegistry = serviceProvider.GetRequiredService<MessageRegistry>();
         
         _msgIndexer = new MessageIndexer();
-        
-        //_orderBookTimer = new Timer(Timer_Tick, new AutoResetEvent(false), 0, 2000);
     }
     
     #endregion
     
     #region Methods
     
-    public QuikBridgeGlobalEventAggregator GetGlobalEventAggregator()
+    public QuikBridgeEventAggregator GetGlobalEventAggregator()
     {
-        return _serviceProvider.GetRequiredService<QuikBridgeGlobalEventAggregator>();
+        return _serviceProvider.GetRequiredService<QuikBridgeEventAggregator>();
     }
 
     public async Task StartAsync(string host, int port, CancellationToken cancellationToken)
@@ -265,48 +263,6 @@ public class QuikBridge
         };
         return await SendRequest(data, metaData);
     }
-    
-
-    private Subscription? IsSubscribed(MessageType msgType, string ticker)
-    {
-        return Subscriptions.FindLast(item => item.Ticker == ticker && item.MessageType == msgType);
-    }
-
-    public async Task SubscribeOrderBook(string ticker, string classCode)
-    {
-        if (IsSubscribed(MessageType.OrderBook, ticker) != null)
-        {
-            return;
-        }
-
-        int msgId = _msgIndexer.GetIndex();
-        
-        string[] args = {classCode, ticker};
-        
-        var req = new JsonReqMessage()
-        {
-            id = msgId,
-            type = "req",
-            data = new JsonReqData()
-            {
-                method = "invoke",
-                function = "Subscribe_Level_II_Quotes",
-                arguments = args
-            }
-        };
-        
-        var newSubscription = new Subscription()
-        {
-            MessageType = MessageType.OrderBook,
-            Ticker = ticker,
-            ClassCode = classCode
-        };
-        
-        Subscriptions.Add(newSubscription);
-        RegisterRequest(req.id, "Subscribe_Level_II_Quotes", newSubscription);
-        Log.Debug("subscription request is sent with message id {0} for ticker {1}", msgId, ticker);
-        await _pHandler.SendReqAsync(req);
-    }
 
     private void RegisterRequest(int id, string methodName, MetaData data)
     {
@@ -338,32 +294,12 @@ public class QuikBridge
         _messageRegistry.RegisterMessage(id, qMessage);
     }
 
-    public async Task Unsubscribe(MessageType msgType, string ticker)
-    {
-        var subscription = IsSubscribed(msgType, ticker);
-        if (subscription == null) return;
-        
-        string[] args = {subscription.ClassCode, ticker};
-        
-        var req = new JsonReqMessage()
-        {
-            id = _msgIndexer.GetIndex(),
-            type = "req",
-            data = new JsonReqData()
-            {
-                method = "invoke",
-                function = "Unsubscribe_Level_II_Quotes",
-                arguments = args
-            }
-        };
-        RegisterRequest(req.id, "Unsubscribe_Level_II_Quotes", subscription);
-        Log.Debug("subscription cancellation is sent with message id {0} for ticker {1}", req.id, ticker);
-        await _pHandler.SendReqAsync(req);
-        Subscriptions.Remove(subscription);
-    }
-
     public void Finish()
     {
+        _pHandler.Finish();
+        var eventAggregator = GetGlobalEventAggregator();
+        eventAggregator.Close();
+        Thread.Sleep(1000);
         _pHandler.StopClient();
     }
     

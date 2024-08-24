@@ -7,9 +7,9 @@ namespace QuikBridgeNet.EventHandlers;
 public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
 {
     private readonly MessageRegistry _messageRegistry;
-    private readonly QuikBridgeGlobalEventAggregator _eventAggregator;
+    private readonly QuikBridgeEventAggregator _eventAggregator;
     
-    public ReqArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeGlobalEventAggregator globalEventAggregator)
+    public ReqArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeEventAggregator globalEventAggregator)
     {
         _messageRegistry = messageRegistry;
         _eventAggregator = globalEventAggregator;
@@ -19,7 +19,7 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
         var msgId = domainEvent.Req.id;
         Log.Debug("msg arrived with message id " + msgId);
 
-        _messageRegistry.TryGetMetadata(msgId, out var quikMessage);
+        _messageRegistry.TryGetMetadata(msgId, out var _);
 
         var methodToken = domainEvent.Req.body?["function"] ?? domainEvent.Req.body?["method"];
         var method = methodToken?.ToString();
@@ -35,42 +35,21 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
                 var value = valueToken?.ToString();
                 
 
-                _eventAggregator.RaiseInstrumentParameterUpdateEvent(this, secCode, classCode, paramName, value);
+                _ = _eventAggregator.RaiseInstrumentParameterUpdateEvent(this, secCode, classCode, paramName, value);
                 break;
             case "quotesChange":
                 var quotesToken = domainEvent.Req.body?["quotes"];
-
-                if (quotesToken != null)
+                var orderBook = quotesToken?.ToObject<OrderBook>();
+                if (orderBook != null)
                 {
-                    var quotes = quotesToken.ToString();
-                    var orderBook = quotesToken.ToObject<OrderBook>();
-                    if (orderBook != null)
-                    {
-                        _eventAggregator.RaiseOrderbookUpdateEvent(this, secCode, classCode, orderBook);
-                    }
+                    _ = _eventAggregator.RaiseOrderBookUpdateEvent(this, secCode, classCode, orderBook);
                 }
 
                 break;
-                /*param_name = data["param"]
-                param_value = data["value"]
-                event_data = {
-                    "sec_code": data["security"],
-                    "class_code": data["class"],
-                    param_name: param_value
-                }
-                event = Event(EVENT_QUOTESTABLE_PARAM_UPDATE, event_data)
-                self.fire(event)
-
-            elif data["method"] == "quotesChange" and "quotes" in data.keys():
-                quotes = data["quotes"]
-                event_data = {
-                    "sec_code": data["security"],
-                    "class_code": data["class"]
-                }
-                if "bid_count" in quotes.keys() and "offer_count" in quotes.keys() and Decimal(quotes["bid_count"]) > 0 and Decimal(quotes["offer_count"]) > 0:
-                    event_data["order_book"] = quotes
-                    event = Event(EVENT_ORDERBOOK, event_data)
-                    self.fire(event)
+            default:
+                _ = _eventAggregator.RaiseServiceMessageArrivedEvent(this, domainEvent.Req);
+                break;
+                /*
             elif data["method"] == "callback" and "OnOrder" == data["name"]:
                 order = data["arguments"][0]
 

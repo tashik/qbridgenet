@@ -1,23 +1,19 @@
 using System.ComponentModel;
+using System.Reflection;
 
 namespace QuikBridgeNet.Helpers;
 
 public static class EnumerationHelper
 {
-    #region Methods
-
-    /// <summary> Метод возвращает значение атрибута Description </summary>
-    /// <param name="enumm"> Перечисление </param>
-    /// <returns> Атрибут Description </returns>
-    public static string GetDescription(this Enum enumm)
+    /// <summary>
+    /// Returns the value of the Description attribute associated with an enum value.
+    /// </summary>
+    /// <param name="enumValue">The enum value.</param>
+    /// <returns>The Description attribute, or the enum value as a string if the attribute is not found.</returns>
+    public static string GetDescription(this Enum enumValue)
     {
-        var fieldInfo = enumm.GetType().GetField(enumm.ToString("F"));
-        var attribArray = fieldInfo.GetCustomAttributes(false);
-        if (attribArray.Length == 0)
-            return enumm.ToString("F");
-        var attrib = attribArray.OfType<DescriptionAttribute>().FirstOrDefault();
-        return attrib != null ? attrib.Description : string.Empty;
+        var fieldInfo = enumValue.GetType().GetField(enumValue.ToString());
+        var description = fieldInfo?.GetCustomAttribute<DescriptionAttribute>()?.Description;
+        return description ?? enumValue.ToString();
     }
-
-    #endregion
 }

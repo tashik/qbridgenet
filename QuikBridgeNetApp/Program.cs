@@ -26,27 +26,30 @@ class Program
         
         // Configure Serilog
         Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Debug() // Adjust as needed
+            .MinimumLevel.Debug()
             .WriteTo.Console()
             .CreateLogger();
         
         var globalEventAggregator = client.GetGlobalEventAggregator();
-
-        // Subscribe to the global events
-        globalEventAggregator.InstrumentCLassesUpdateEvent += (sender, eventArgs) =>
-        {
-            Log.Information("Instrument classes number arrived: {NumClasses}", eventArgs.Count);
-        };
         
-        globalEventAggregator.InstrumentParameterUpdateEvent += (sender, eventArgs) =>
+        // Subscribe to the global events
+        _ = globalEventAggregator.SubscribeToInstrumentClassesUpdate( (sender, instrumentClasses) =>
+        {
+            Log.Information("Instrument classes number arrived: {NumClasses}", instrumentClasses.Count);
+            return Task.CompletedTask;
+        });
+        
+        _ = globalEventAggregator.SubscribeToInstrumentParameterUpdate( (sender, eventArgs) =>
         {
             Log.Information("Instrument parameter {Name} current value {Val} ", eventArgs.ParamName, eventArgs.ParamValue);
-        };
+            return Task.CompletedTask;
+        });
         
-        globalEventAggregator.OrderbookUpdateEvent += (sender, eventArgs) =>
+        _ = globalEventAggregator.SubscribeToOrderBookUpdate( (sender, eventArgs) =>
         {
-            Log.Information("Orderbook: bids number {Bids}; asks number {Offers} ", eventArgs.OrderBook?.bid_count, eventArgs.OrderBook?.offer_count);
-        };
+            Log.Information("Order book: bids number {Bids}; asks number {Offers} ", eventArgs.OrderBook?.bid_count, eventArgs.OrderBook?.offer_count);
+            return Task.CompletedTask;
+        });
         
         await client.StartAsync(host, port, cts.Token);
 
