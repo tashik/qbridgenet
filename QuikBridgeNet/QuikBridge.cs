@@ -21,6 +21,8 @@ public class QuikBridge
     private readonly MessageRegistry _messageRegistry;
 
     private readonly IServiceProvider _serviceProvider;
+
+    private Dictionary<string, object> _dataSources = new();
     
     #endregion
     
@@ -48,10 +50,38 @@ public class QuikBridge
 
     public async Task StartAsync(string host, int port, CancellationToken cancellationToken)
     {
+        var eventAggregator = GetGlobalEventAggregator();
+        eventAggregator.SubscribeToServiceMessages(async (sender, resp, registeredReq) =>
+        {
+            if (registeredReq == null) return;
+            
+            switch (registeredReq?.MessageType)
+            {
+                case MessageType.Datasource:
+                    
+                    var result = resp.body?["result"]?.ToObject<List<int>>();
+                    if (result != null)
+                    {
+                        foreach (var r in result)
+                        {
+                            var dsName = registeredReq.Ticker + "[" + registeredReq.Interval + "]";
+                            _dataSources[dsName] = r;
+                            Log.Debug("DataSource with name {dsName} has been crated; callback is set up", dsName);
+                            await SetDsUpdateCallback(r, dsName);
+                        }
+                    }
+                    break;
+            }
+        });
         await _pHandler.StartClientAsync(host, port, cancellationToken);
     }
+    
+    public void RegisterDataSourceCallback(DatasourceCallbackReceived callback)
+    {
+        _pHandler.RegisterDataSourceCallback(callback);
+    }
 
-    private async Task<int> SendRequest(JsonCommandData data, MetaData metaData)
+    private async Task<int> SendRequest(JsonCommandData data, MetaData metaData, bool preprocessArguments = true)
     {
         var msgId = _msgIndexer.GetIndex();
         var method = data.method;
@@ -69,7 +99,7 @@ public class QuikBridge
             type = MessageType.Req.GetDescription(),
             data = reqData ?? data
         };
-        await _pHandler.SendReqAsync(msg);
+        await _pHandler.SendReqAsync(msg, preprocessArguments);
         Log.Debug($"New message id: {msgId}");
         return msgId;
     }
@@ -86,11 +116,11 @@ public class QuikBridge
 
     public async Task<int> CreateDs(string classCode, string secCode, string interval)
     {
-        string[] args = {classCode, secCode, interval};
+        string[] args = {$"\"{classCode}\",\"{secCode}\",{interval}"};
         var data = new JsonReqData()
         {
             method = "invoke", 
-            function = "getClassesList",
+            function = "CreateDataSource",
             arguments = args
         };
         var metaData = new DataSource()
@@ -100,10 +130,10 @@ public class QuikBridge
             ClassCode = classCode,
             Interval = interval
         };
-        return await SendRequest(data, metaData);
+        return await SendRequest(data, metaData, false);
     }
 
-    public async Task<int> SetDsUpdateCallback(object datasource, Func<string, string, int>? callback = null)
+    public async Task<int> SetDsUpdateCallback(object datasource, string dataSourceName)
     {
         string jsonArguments = "{\"type\": \"callable\", \"function\": \"on_update\"}";
         string[] args = {jsonArguments};
@@ -117,43 +147,43 @@ public class QuikBridge
         var metaData = new DatasourceCallback()
         {
             MessageType = MessageType.DatasourceCallback,
-            DataSource = datasource,
-            Callback = callback
+            DataSource = dataSourceName
         };
-        return await SendRequest(data, metaData);
+        return await SendRequest(data, metaData, false);
     }
 
-    public async Task<int> GetBar(object datasource, MessageType barFunc, int barIndex)
+    public async Task<int> GetBar(string dataSourceName, MessageType barFunc, int barIndex)
     {
+        if (!_dataSources.TryGetValue(dataSourceName, out var source)) return 0;
         string[] args = {Convert.ToString(barIndex)};
         var data = new JsonReqData()
         {
             method = "invoke",
-            obj = datasource,
+            obj = source,
             function = barFunc.GetDescription(),
             arguments = args
         };
         var metaData = new DatasourceCallback()
         {
             MessageType = barFunc,
-            DataSource = datasource
+            DataSource = dataSourceName
         };
         return await SendRequest(data, metaData);
     }
 
-    public async Task<int> CloseDs(object? datasource)
+    public async Task<int> CloseDs(string dataSourceName)
     {
-        if (datasource == null) return 0;
+        if (!_dataSources.TryGetValue(dataSourceName, out var source)) return 0;
         var data = new JsonReqData()
         {
             method = "invoke",
-            obj = datasource,
+            obj = source,
             function = "Close",
         };
         var metaData = new DatasourceCallback()
         {
             MessageType = MessageType.DatasourceClose,
-            DataSource = datasource
+            DataSource = dataSourceName
         };
         return await SendRequest(data, metaData);
     }

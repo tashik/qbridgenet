@@ -19,7 +19,7 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
         var msgId = domainEvent.Req.id;
         Log.Debug("msg arrived with message id " + msgId);
 
-        _messageRegistry.TryGetMetadata(msgId, out var _);
+        _messageRegistry.TryGetMetadata(msgId, out var qMessage);
 
         var methodToken = domainEvent.Req.body?["function"] ?? domainEvent.Req.body?["method"];
         var method = methodToken?.ToString();
@@ -47,7 +47,7 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
 
                 break;
             default:
-                _ = _eventAggregator.RaiseServiceMessageArrivedEvent(this, domainEvent.Req);
+                _ = _eventAggregator.RaiseServiceMessageArrivedEvent(this, domainEvent.Req, qMessage);
                 break;
                 /*
             elif data["method"] == "callback" and "OnOrder" == data["name"]:

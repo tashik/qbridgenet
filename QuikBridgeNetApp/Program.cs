@@ -1,5 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using QuikBridgeNet;
+using QuikBridgeNet.Entities;
+using QuikBridgeNet.Helpers;
 using Serilog;
 
 class Program
@@ -22,6 +24,11 @@ class Program
         // Resolve the client
         var client = serviceProvider.GetRequiredService<QuikBridge>();
         
+        client.RegisterDataSourceCallback((msg) =>
+        {
+            Log.Information("DataSource message {body}", msg.body?.ToString());
+        });
+        
         CancellationTokenSource cts = new CancellationTokenSource();
         
         // Configure Serilog
@@ -33,21 +40,27 @@ class Program
         var globalEventAggregator = client.GetGlobalEventAggregator();
         
         // Subscribe to the global events
-        _ = globalEventAggregator.SubscribeToInstrumentClassesUpdate( (sender, instrumentClasses) =>
+        globalEventAggregator.SubscribeToInstrumentClassesUpdate( (sender, instrumentClasses) =>
         {
             Log.Information("Instrument classes number arrived: {NumClasses}", instrumentClasses.Count);
             return Task.CompletedTask;
         });
         
-        _ = globalEventAggregator.SubscribeToInstrumentParameterUpdate( (sender, eventArgs) =>
+        globalEventAggregator.SubscribeToInstrumentParameterUpdate( (sender, eventArgs) =>
         {
             Log.Information("Instrument parameter {Name} current value {Val} ", eventArgs.ParamName, eventArgs.ParamValue);
             return Task.CompletedTask;
         });
         
-        _ = globalEventAggregator.SubscribeToOrderBookUpdate( (sender, eventArgs) =>
+        globalEventAggregator.SubscribeToOrderBookUpdate( (sender, eventArgs) =>
         {
             Log.Information("Order book: bids number {Bids}; asks number {Offers} ", eventArgs.OrderBook?.bid_count, eventArgs.OrderBook?.offer_count);
+            return Task.CompletedTask;
+        });
+        
+        globalEventAggregator.SubscribeToServiceMessages( (sender, resp, registeredReq) =>
+        {
+            Log.Information("Arrived message with type {MsgType}", registeredReq?.MessageType.GetDescription());
             return Task.CompletedTask;
         });
         
@@ -58,6 +71,8 @@ class Program
         await client.SubscribeToQuotesTableParams("SPBFUT", "SiU4", "LAST");
 
         await client.SubscribeToOrderBook( "SPBFUT", "SiU4");
+
+        await client.CreateDs("SPBFUT", "SiU4", "5");
         
         Console.WriteLine("Press any key to stop...");
         Console.ReadKey();

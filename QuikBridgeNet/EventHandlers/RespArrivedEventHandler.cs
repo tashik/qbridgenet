@@ -39,7 +39,7 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
                 _ = _eventAggregator.RaiseInstrumentClassesUpdateEvent(this, classes);
                 break;
             default:
-                _ = _eventAggregator.RaiseServiceMessageArrivedEvent(this, msg);
+                _ = _eventAggregator.RaiseServiceMessageArrivedEvent(this, msg, newMessage);
                 break;
         }
         

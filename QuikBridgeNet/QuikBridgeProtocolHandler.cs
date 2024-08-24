@@ -66,7 +66,7 @@ public class QuikBridgeProtocolHandler
         }
     }
 
-    public async Task SendReqAsync(JsonReqMessage req)
+    public async Task SendReqAsync(JsonReqMessage req, bool preprocessArguments = true)
     {
         if (_clientSocket == null || !_clientSocket.Connected)
         {
@@ -80,7 +80,14 @@ public class QuikBridgeProtocolHandler
             reqJson += "\"function\":\"" + commandData.function + "\",";
             if (commandData.arguments is { Length: > 0 })
             {
-                reqJson += "\"arguments\":[" + JsonConvert.SerializeObject(commandData.arguments) + "],";
+                if (preprocessArguments)
+                {
+                    reqJson += "\"arguments\":[" + JsonConvert.SerializeObject(commandData.arguments) + "],";
+                }
+                else
+                {
+                    reqJson += "\"arguments\":[" + commandData.arguments[0] + "],";
+                }
             }
             else
             {
@@ -89,7 +96,7 @@ public class QuikBridgeProtocolHandler
 
             if (commandData.obj != null)
             {
-                reqJson += "\"object\":\"" + commandData.obj + "\",";
+                reqJson += "\"object\":" + commandData.obj + ",";
             }
         }
 
