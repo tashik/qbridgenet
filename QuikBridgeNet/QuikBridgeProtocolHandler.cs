@@ -284,11 +284,8 @@ public class QuikBridgeProtocolHandler
                     // Incomplete JSON
                     break;
                 }
-                
-                Log.Debug("RESP: " + accumulatedString);
                 await OnDataReceived(jDoc);
-                
-
+                Log.Debug("RESP {Body}", jDoc.ToString());
                 // Remove processed JSON from the buffer
                 int jsonEndIndex = FindEndOfJson(accumulatedString);
                 accumulatedString = accumulatedString.Substring(jsonEndIndex + 1);
