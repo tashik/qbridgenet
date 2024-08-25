@@ -42,20 +42,12 @@ public class QuikBridgeProtocolHandler
 
     public async Task StartClientAsync(string host, int port, CancellationToken cancellationToken)
     {
-        try
-        {
-            _clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            await _clientSocket.ConnectAsync(host, port, cancellationToken);
-            Log.Information("Connected to server at {ServerIP}:{Port}", host, port);
+        _clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        await _clientSocket.ConnectAsync(host, port, cancellationToken);
+        Log.Information("Connected to server at {ServerIP}:{Port}", host, port);
 
-            _isStopped = false;
-            _ = Task.Run(() => ReceiveDataAsync(cancellationToken), cancellationToken);
-
-        }
-        catch (Exception e)
-        {
-            Log.Error(e, "Error in StartClientAsync");
-        }
+        _isStopped = false;
+        _ = Task.Run(() => ReceiveDataAsync(cancellationToken), cancellationToken);
     }
     
     private void ProcessQueue()
@@ -117,6 +109,14 @@ public class QuikBridgeProtocolHandler
             if (paramData.param != "")
             {
                 reqJson += "\"param\":\"" + paramData.param + "\",";
+            }
+        }
+
+        if (req.data is JsonCommandDataCallback callbackData)
+        {
+            if (callbackData.callback != "")
+            {
+                reqJson +=  "\"callback\":\"" + callbackData.callback + "\",";
             }
         }
 

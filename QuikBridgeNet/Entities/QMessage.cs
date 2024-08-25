@@ -9,6 +9,5 @@ public class QMessage
     public string Ticker { get; set; } = "";
     public string ClassCode { get; set; } = "";
     public string Interval { get; set; } = "";
-    public object? DataSource { get; set; }
-    public Func<string, string, int>? Callback { get; set; }
+    public string DataSource { get; set; } = "";
 }

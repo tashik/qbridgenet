@@ -36,10 +36,17 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
                         classes.AddRange(cl);
                     }
                 }
-                _ = _eventAggregator.RaiseInstrumentClassesUpdateEvent(this, classes);
+                _ = _eventAggregator.RaiseInstrumentClassesUpdateEvent(classes);
+                break;
+            case MessageType.Close:
+            case MessageType.High:
+            case MessageType.Low:
+            case MessageType.Open:
+            case MessageType.Volume:
+                
                 break;
             default:
-                _ = _eventAggregator.RaiseServiceMessageArrivedEvent(this, msg, newMessage);
+                _ = _eventAggregator.RaiseServiceMessageArrivedEvent(msg, newMessage);
                 break;
         }
         

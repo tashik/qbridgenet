@@ -23,6 +23,7 @@ class Program
 
         // Resolve the client
         var client = serviceProvider.GetRequiredService<QuikBridge>();
+        var dataSource = "";
         
         client.RegisterDataSourceCallback((msg) =>
         {
@@ -40,28 +41,41 @@ class Program
         var globalEventAggregator = client.GetGlobalEventAggregator();
         
         // Subscribe to the global events
-        globalEventAggregator.SubscribeToInstrumentClassesUpdate( (sender, instrumentClasses) =>
+        globalEventAggregator.SubscribeToInstrumentClassesUpdate( instrumentClasses =>
         {
             Log.Information("Instrument classes number arrived: {NumClasses}", instrumentClasses.Count);
             return Task.CompletedTask;
         });
         
-        globalEventAggregator.SubscribeToInstrumentParameterUpdate( (sender, eventArgs) =>
+        globalEventAggregator.SubscribeToAllTrades( trade =>
+        {
+            Log.Information("Trade arrived: {Security} {Qty} x {Price}", trade.sec_code, trade.qty, trade.price);
+            return Task.CompletedTask;
+        });
+        
+        globalEventAggregator.SubscribeToInstrumentParameterUpdate( eventArgs =>
         {
             Log.Information("Instrument parameter {Name} current value {Val} ", eventArgs.ParamName, eventArgs.ParamValue);
             return Task.CompletedTask;
         });
         
-        globalEventAggregator.SubscribeToOrderBookUpdate( (sender, eventArgs) =>
+        globalEventAggregator.SubscribeToOrderBookUpdate( eventArgs =>
         {
             Log.Information("Order book: bids number {Bids}; asks number {Offers} ", eventArgs.OrderBook?.bid_count, eventArgs.OrderBook?.offer_count);
             return Task.CompletedTask;
         });
         
-        globalEventAggregator.SubscribeToServiceMessages( (sender, resp, registeredReq) =>
+        globalEventAggregator.SubscribeToServiceMessages( (resp, registeredReq) =>
         {
             Log.Information("Arrived message with type {MsgType}", registeredReq?.MessageType.GetDescription());
             return Task.CompletedTask;
+        });
+        
+        globalEventAggregator.SubscribeToDataSourceSet( async (dataSourceName, dataSourceReq) =>
+        {
+            Log.Information("Datasource is set for instrument {Ticker} with time frame {Interval}", dataSourceReq?.Ticker, dataSourceReq?.Interval);
+            dataSource = dataSourceName;
+            await client.GetBar(dataSourceName, MessageType.Close, 1);
         });
         
         await client.StartAsync(host, port, cts.Token);
@@ -73,6 +87,8 @@ class Program
         await client.SubscribeToOrderBook( "SPBFUT", "SiU4");
 
         await client.CreateDs("SPBFUT", "SiU4", "5");
+
+        await client.SetGlobalCallback(MessageType.OnAllTrade);
         
         Console.WriteLine("Press any key to stop...");
         Console.ReadKey();

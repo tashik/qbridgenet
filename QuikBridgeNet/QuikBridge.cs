@@ -51,10 +51,10 @@ public class QuikBridge
     public async Task StartAsync(string host, int port, CancellationToken cancellationToken)
     {
         var eventAggregator = GetGlobalEventAggregator();
-        eventAggregator.SubscribeToServiceMessages(async (sender, resp, registeredReq) =>
+        eventAggregator.SubscribeToServiceMessages(async (resp, registeredReq) =>
         {
             if (registeredReq == null) return;
-            
+            _messageRegistry.TryGetMetadata(resp.id, out var qMessage);
             switch (registeredReq?.MessageType)
             {
                 case MessageType.Datasource:
@@ -66,14 +66,25 @@ public class QuikBridge
                         {
                             var dsName = registeredReq.Ticker + "[" + registeredReq.Interval + "]";
                             _dataSources[dsName] = r;
-                            Log.Debug("DataSource with name {dsName} has been crated; callback is set up", dsName);
+                            Log.Debug("DataSource with name {dsName} has been created; callback is set up", dsName);
                             await SetDsUpdateCallback(r, dsName);
+                            _ = GetGlobalEventAggregator().RaiseDataSourceSetEvent(dsName, qMessage);
                         }
                     }
                     break;
             }
         });
         await _pHandler.StartClientAsync(host, port, cancellationToken);
+        await SetupCallbacks();
+    }
+
+    private async Task SetupCallbacks()
+    {
+        MessageType[] callbacks = { MessageType.OnTrade, MessageType.OnTransReply, MessageType.OnOrder};
+        foreach (var cb in callbacks)
+        {
+            await SetGlobalCallback(cb);
+        }
     }
     
     public void RegisterDataSourceCallback(DatasourceCallbackReceived callback)
@@ -168,7 +179,7 @@ public class QuikBridge
             MessageType = barFunc,
             DataSource = dataSourceName
         };
-        return await SendRequest(data, metaData);
+        return await SendRequest(data, metaData, false);
     }
 
     public async Task<int> CloseDs(string dataSourceName)
@@ -308,14 +319,21 @@ public class QuikBridge
         switch (data)
         {
             case Subscription subscription:
-            {
                 if (subscription.Ticker != "")
                 {
                     qMessage.Ticker = subscription.Ticker;
                 }
 
+                if (subscription.ClassCode != "")
+                {
+                    qMessage.ClassCode = subscription.ClassCode;
+                }
+
+                if (subscription is DataSource dsInit)
+                {
+                    qMessage.Interval = dsInit.Interval;
+                }
                 break;
-            }
             case DatasourceCallback ds:
                 qMessage.DataSource = ds.DataSource;
                 break;

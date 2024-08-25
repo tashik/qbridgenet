@@ -4,36 +4,53 @@ using QuikBridgeNet.Entities;
 
 namespace QuikBridgeNet;
 
-public delegate Task InstrumentClassesUpdateHandler(object sender, List<string> instrumentClasses);
-public delegate Task InstrumentParameterUpdateHandler(object sender, InstrumentParametersUpdateEventArgs args);
-public delegate Task OrderBookUpdateHandler(object sender, OrderBookUpdateEventArgs args);
-public delegate Task ServiceMessageHandler(object sender, JsonMessage resp, QMessage? registeredMsg);
+public delegate Task InstrumentClassesUpdateHandler(List<string> instrumentClasses);
+public delegate Task InstrumentParameterUpdateHandler(InstrumentParametersUpdateEventArgs args);
+public delegate Task OrderBookUpdateHandler(OrderBookUpdateEventArgs args);
+public delegate Task ServiceMessageHandler(JsonMessage resp, QMessage? registeredMsg);
+public delegate Task DataSourceSetHandler(string dataSourceName, QMessage? dataSourceReq);
+public delegate Task NewAllTradeHandler(AllTrade trade);
 
 public class QuikBridgeEventAggregator
 {
     // Channels
-    private readonly Channel<(object sender, List<string> instrumentClasses)> _instrumentClassesUpdateChannel = Channel.CreateUnbounded<(object, List<string>)>();
-    private readonly Channel<(object sender, InstrumentParametersUpdateEventArgs args)> _instrumentParameterUpdateChannel = Channel.CreateUnbounded<(object, InstrumentParametersUpdateEventArgs)>();
-    private readonly Channel<(object sender, OrderBookUpdateEventArgs args)> _orderBookUpdateChannel = Channel.CreateUnbounded<(object, OrderBookUpdateEventArgs)>();
-    private readonly Channel<(object sender, JsonMessage resp, QMessage? registeredMsg)> _serviceMessagesChannel = Channel.CreateUnbounded<(object, JsonMessage, QMessage?)>();
+    private readonly Channel<List<string>> _instrumentClassesUpdateChannel = Channel.CreateUnbounded<List<string>>();
+    private readonly Channel<AllTrade> _allTradesChannel = Channel.CreateUnbounded<AllTrade>();
+    private readonly Channel<InstrumentParametersUpdateEventArgs> _instrumentParameterUpdateChannel = Channel.CreateUnbounded<InstrumentParametersUpdateEventArgs>();
+    private readonly Channel<OrderBookUpdateEventArgs> _orderBookUpdateChannel = Channel.CreateUnbounded<OrderBookUpdateEventArgs>();
+    private readonly Channel<(JsonMessage resp, QMessage? registeredMsg)> _serviceMessagesChannel = Channel.CreateUnbounded<(JsonMessage, QMessage?)>();
+    private readonly Channel<(string dataSourceName, QMessage? registeredMsg)> _dataSourceSetChannel = Channel.CreateUnbounded<(string, QMessage?)>();
 
     // Subscriber pools
     private readonly ConcurrentBag<InstrumentClassesUpdateHandler> _instrumentClassesUpdateHandlers = new();
     private readonly ConcurrentBag<InstrumentParameterUpdateHandler> _instrumentParameterUpdateHandlers = new();
     private readonly ConcurrentBag<OrderBookUpdateHandler> _orderBookUpdateHandlers = new();
     private readonly ConcurrentBag<ServiceMessageHandler> _serviceMessageHandlers = new();
+    private readonly ConcurrentBag<DataSourceSetHandler> _dataSourceSetHandlers = new();
+    private readonly ConcurrentBag<NewAllTradeHandler> _allTradeHandlers = new();
 
-    public async Task RaiseServiceMessageArrivedEvent(object sender, JsonMessage resp, QMessage registeredMsg)
+    // Raise events
+    public async Task RaiseServiceMessageArrivedEvent(JsonMessage resp, QMessage? registeredMsg)
     {
-        await _serviceMessagesChannel.Writer.WriteAsync((sender, resp, registeredMsg));
+        await _serviceMessagesChannel.Writer.WriteAsync((resp, registeredMsg));
+    }
+    
+    public async Task RaiseDataSourceSetEvent(string dataSourceName, QMessage? dataSourceReq)
+    {
+        await _dataSourceSetChannel.Writer.WriteAsync((dataSourceName, dataSourceReq));
+    }
+    
+    public async Task RaiseNewAllTradeEvent(AllTrade trade)
+    {
+        await _allTradesChannel.Writer.WriteAsync(trade);
     }
 
-    public async Task RaiseInstrumentClassesUpdateEvent(object sender, List<string> instrumentClasses)
+    public async Task RaiseInstrumentClassesUpdateEvent(List<string> instrumentClasses)
     {
-        await _instrumentClassesUpdateChannel.Writer.WriteAsync((sender, instrumentClasses));
+        await _instrumentClassesUpdateChannel.Writer.WriteAsync(instrumentClasses);
     }
 
-    public async Task RaiseInstrumentParameterUpdateEvent(object sender, string? secCode, string? classCode, string? paramName, string? paramValue)
+    public async Task RaiseInstrumentParameterUpdateEvent(string? secCode, string? classCode, string? paramName, string? paramValue)
     {
         var args = new InstrumentParametersUpdateEventArgs
         {
@@ -42,10 +59,10 @@ public class QuikBridgeEventAggregator
             ParamName = paramName,
             ParamValue = paramValue
         };
-        await _instrumentParameterUpdateChannel.Writer.WriteAsync((sender, args));
+        await _instrumentParameterUpdateChannel.Writer.WriteAsync(args);
     }
 
-    public async Task RaiseOrderBookUpdateEvent(object sender, string? secCode, string? classCode, OrderBook? orderBook)
+    public async Task RaiseOrderBookUpdateEvent(string? secCode, string? classCode, OrderBook? orderBook)
     {
         var args = new OrderBookUpdateEventArgs
         {
@@ -53,7 +70,7 @@ public class QuikBridgeEventAggregator
             ClassCode = classCode,
             OrderBook = orderBook
         };
-        await _orderBookUpdateChannel.Writer.WriteAsync((sender, args));
+        await _orderBookUpdateChannel.Writer.WriteAsync(args);
     }
 
     // Subscribe to events
@@ -80,44 +97,76 @@ public class QuikBridgeEventAggregator
         _serviceMessageHandlers.Add(handler);
         _ = ProcessServiceMessages();
     }
+    
+    public void SubscribeToDataSourceSet(DataSourceSetHandler handler)
+    {
+        _dataSourceSetHandlers.Add(handler);
+        _ = ProcessDataSourceSet();
+    }
+    
+    public void SubscribeToAllTrades(NewAllTradeHandler handler)
+    {
+        _allTradeHandlers.Add(handler);
+        _ = ProcessNewAllTrade();
+    }
 
-    // Internal processing
+    // Internal processing methods
     private async Task ProcessInstrumentClassesUpdate()
     {
-        await foreach (var (sender, instrumentClasses) in _instrumentClassesUpdateChannel.Reader.ReadAllAsync())
+        await foreach (var instrumentClasses in _instrumentClassesUpdateChannel.Reader.ReadAllAsync())
         {
             var handlers = _instrumentClassesUpdateHandlers.ToArray();
-            var tasks = handlers.Select(handler => handler(sender, instrumentClasses)).ToList();
+            var tasks = handlers.Select(handler => handler(instrumentClasses)).ToList();
+            await Task.WhenAll(tasks);
+        }
+    }
+    
+    private async Task ProcessNewAllTrade()
+    {
+        await foreach (var trade in _allTradesChannel.Reader.ReadAllAsync())
+        {
+            var handlers = _allTradeHandlers.ToArray();
+            var tasks = handlers.Select(handler => handler(trade)).ToList();
             await Task.WhenAll(tasks);
         }
     }
 
     private async Task ProcessInstrumentParameterUpdate()
     {
-        await foreach (var (sender, args) in _instrumentParameterUpdateChannel.Reader.ReadAllAsync())
+        await foreach (var args in _instrumentParameterUpdateChannel.Reader.ReadAllAsync())
         {
             var handlers = _instrumentParameterUpdateHandlers.ToArray();
-            var tasks = handlers.Select(handler => handler(sender, args)).ToList();
+            var tasks = handlers.Select(handler => handler(args)).ToList();
             await Task.WhenAll(tasks);
         }
     }
 
     private async Task ProcessOrderBookUpdate()
     {
-        await foreach (var (sender, args) in _orderBookUpdateChannel.Reader.ReadAllAsync())
+        await foreach (var args in _orderBookUpdateChannel.Reader.ReadAllAsync())
         {
             var handlers = _orderBookUpdateHandlers.ToArray();
-            var tasks = handlers.Select(handler => handler(sender, args)).ToList();
+            var tasks = handlers.Select(handler => handler(args)).ToList();
             await Task.WhenAll(tasks);
         }
     }
 
     private async Task ProcessServiceMessages()
     {
-        await foreach (var (sender, resp, registeredMsg) in _serviceMessagesChannel.Reader.ReadAllAsync())
+        await foreach (var (resp, registeredMsg) in _serviceMessagesChannel.Reader.ReadAllAsync())
         {
             var handlers = _serviceMessageHandlers.ToArray();
-            var tasks = handlers.Select(handler => handler(sender, resp, registeredMsg)).ToList();
+            var tasks = handlers.Select(handler => handler(resp, registeredMsg)).ToList();
+            await Task.WhenAll(tasks);
+        }
+    }
+    
+    private async Task ProcessDataSourceSet()
+    {
+        await foreach (var (dataSourceName, dataSourceReq) in _dataSourceSetChannel.Reader.ReadAllAsync())
+        {
+            var handlers = _dataSourceSetHandlers.ToArray();
+            var tasks = handlers.Select(handler => handler(dataSourceName, dataSourceReq)).ToList();
             await Task.WhenAll(tasks);
         }
     }
@@ -129,6 +178,7 @@ public class QuikBridgeEventAggregator
         _instrumentParameterUpdateChannel.Writer.Complete();
         _orderBookUpdateChannel.Writer.Complete();
         _serviceMessagesChannel.Writer.Complete();
+        _dataSourceSetChannel.Writer.Complete();
     }
 }
 

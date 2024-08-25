@@ -26,4 +26,24 @@ public enum MessageType
     UnsubscribeParam,
     [Description("send_transaction")]
     SendTransaction,
+    [Description("C")]
+    Close,
+    [Description("H")]
+    High,
+    [Description("L")]
+    Low,
+    [Description("O")]
+    Open,
+    [Description("V")]
+    Volume,
+    [Description("T")]
+    BarTime,
+    [Description("OnTrade")]
+    OnTrade,
+    [Description("OnOrder")]
+    OnOrder,
+    [Description("OnTransReply")]
+    OnTransReply,
+    [Description("OnAllTrade")]
+    OnAllTrade,
 }

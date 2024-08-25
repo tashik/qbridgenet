@@ -35,19 +35,41 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
                 var value = valueToken?.ToString();
                 
 
-                _ = _eventAggregator.RaiseInstrumentParameterUpdateEvent(this, secCode, classCode, paramName, value);
+                _ = _eventAggregator.RaiseInstrumentParameterUpdateEvent(secCode, classCode, paramName, value);
                 break;
             case "quotesChange":
                 var quotesToken = domainEvent.Req.body?["quotes"];
                 var orderBook = quotesToken?.ToObject<OrderBook>();
                 if (orderBook != null)
                 {
-                    _ = _eventAggregator.RaiseOrderBookUpdateEvent(this, secCode, classCode, orderBook);
+                    _ = _eventAggregator.RaiseOrderBookUpdateEvent(secCode, classCode, orderBook);
                 }
 
                 break;
+            case "callback":
+                var funcNameToken = domainEvent.Req.body?["name"];
+                if (funcNameToken != null)
+                {
+                    var funcName = funcNameToken.ToString();
+                    switch (funcName)
+                    {
+                        case "OnAllTrade":
+                            var resultToken = domainEvent.Req.body?["result"] ?? null;
+                            if (resultToken != null)
+                            {
+                                var trade = resultToken.ToObject<AllTrade>();
+                                if (trade != null)
+                                {
+                                    _ = _eventAggregator.RaiseNewAllTradeEvent(trade);
+                                }
+                            }
+                            
+                            break;
+                    }
+                }
+                break;
             default:
-                _ = _eventAggregator.RaiseServiceMessageArrivedEvent(this, domainEvent.Req, qMessage);
+                _ = _eventAggregator.RaiseServiceMessageArrivedEvent(domainEvent.Req, qMessage);
                 break;
                 /*
             elif data["method"] == "callback" and "OnOrder" == data["name"]:
