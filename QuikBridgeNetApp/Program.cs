@@ -89,7 +89,7 @@ class Program
 
         await client.CreateDs("SPBFUT", "SiU4", "5");
 
-        await client.SetGlobalCallback(MessageType.OnAllTrade);
+        //await client.SetGlobalCallback(MessageType.OnAllTrade);
         
         Console.WriteLine("Press any key to stop...");
         Console.ReadKey();
