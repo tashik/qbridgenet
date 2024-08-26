@@ -22,7 +22,8 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
         if (!_messageRegistry.TryGetMetadata(msg.id, out var newMessage)) return Task.CompletedTask;
         if (newMessage == null) return Task.CompletedTask;
         Log.Debug("resp method is {0}", newMessage.Method);
-
+        
+        
         switch (newMessage.MessageType)
         {
             case MessageType.Classes:
@@ -36,7 +37,20 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
                         classes.AddRange(cl);
                     }
                 }
-                _ = _eventAggregator.RaiseInstrumentClassesUpdateEvent(classes);
+                _ = _eventAggregator.RaiseInstrumentClassesUpdateEvent(classes, QuikDataType.ClassCode);
+                break;
+            case MessageType.Securities:
+                List<string> tickers = new();
+                var wrapperToken = msg.body?["result"] ?? null;
+                var tickerData = wrapperToken?.ToObject<List<string>>();
+                if (tickerData != null)
+                {
+                    foreach (var cl in from c in tickerData where c.Contains(',') select c.Split(',').ToList())
+                    {
+                        tickers.AddRange(cl);
+                    }
+                }
+                _ = _eventAggregator.RaiseInstrumentClassesUpdateEvent(tickers, QuikDataType.SecCode);
                 break;
             case MessageType.Close:
             case MessageType.High:

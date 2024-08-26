@@ -1,7 +1,6 @@
 namespace QuikBridgeNet.Entities.MessageMeta;
 
-public class Subscription : MetaData
+public class Subscription : ClassCode
 {
     public string Ticker { get; set; } = "";
-    public string ClassCode { get; set; } = "";
 }

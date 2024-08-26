@@ -14,6 +14,8 @@ public enum MessageType
     Req,
     [Description("classes_list")]
     Classes,
+    [Description("getClassSecurities")]
+    Securities,
     [Description("create_datasource")]
     Datasource,
     [Description("datasource_callback")]
@@ -46,4 +48,12 @@ public enum MessageType
     OnTransReply,
     [Description("OnAllTrade")]
     OnAllTrade,
+}
+
+public enum QuikDataType
+{
+    [Description("Код класса")]
+    ClassCode,
+    [Description("Код инструмента")]
+    SecCode
 }

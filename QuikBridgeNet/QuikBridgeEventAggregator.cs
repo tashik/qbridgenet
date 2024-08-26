@@ -1,10 +1,11 @@
 using System.Collections.Concurrent;
+using System.ComponentModel.DataAnnotations;
 using System.Threading.Channels;
 using QuikBridgeNet.Entities;
 
 namespace QuikBridgeNet;
 
-public delegate Task InstrumentClassesUpdateHandler(List<string> instrumentClasses);
+public delegate Task InstrumentClassesUpdateHandler(List<string> instrumentClasses, QuikDataType dataType);
 public delegate Task InstrumentParameterUpdateHandler(InstrumentParametersUpdateEventArgs args);
 public delegate Task OrderBookUpdateHandler(OrderBookUpdateEventArgs args);
 public delegate Task ServiceMessageHandler(JsonMessage resp, QMessage? registeredMsg);
@@ -14,7 +15,7 @@ public delegate Task NewAllTradeHandler(AllTrade trade);
 public class QuikBridgeEventAggregator
 {
     // Channels
-    private readonly Channel<List<string>> _instrumentClassesUpdateChannel = Channel.CreateUnbounded<List<string>>();
+    private readonly Channel<(List<string> data, QuikDataType dataType)> _instrumentClassesUpdateChannel = Channel.CreateUnbounded<(List<string>, QuikDataType)>();
     private readonly Channel<AllTrade> _allTradesChannel = Channel.CreateUnbounded<AllTrade>();
     private readonly Channel<InstrumentParametersUpdateEventArgs> _instrumentParameterUpdateChannel = Channel.CreateUnbounded<InstrumentParametersUpdateEventArgs>();
     private readonly Channel<OrderBookUpdateEventArgs> _orderBookUpdateChannel = Channel.CreateUnbounded<OrderBookUpdateEventArgs>();
@@ -45,9 +46,9 @@ public class QuikBridgeEventAggregator
         await _allTradesChannel.Writer.WriteAsync(trade);
     }
 
-    public async Task RaiseInstrumentClassesUpdateEvent(List<string> instrumentClasses)
+    public async Task RaiseInstrumentClassesUpdateEvent(List<string> instrumentClasses, QuikDataType dataType)
     {
-        await _instrumentClassesUpdateChannel.Writer.WriteAsync(instrumentClasses);
+        await _instrumentClassesUpdateChannel.Writer.WriteAsync((instrumentClasses, dataType));
     }
 
     public async Task RaiseInstrumentParameterUpdateEvent(string? secCode, string? classCode, string? paramName, string? paramValue)
@@ -113,10 +114,10 @@ public class QuikBridgeEventAggregator
     // Internal processing methods
     private async Task ProcessInstrumentClassesUpdate()
     {
-        await foreach (var instrumentClasses in _instrumentClassesUpdateChannel.Reader.ReadAllAsync())
+        await foreach ((var instrumentClasses, var dataType) in _instrumentClassesUpdateChannel.Reader.ReadAllAsync())
         {
             var handlers = _instrumentClassesUpdateHandlers.ToArray();
-            var tasks = handlers.Select(handler => handler(instrumentClasses)).ToList();
+            var tasks = handlers.Select(handler => handler(instrumentClasses, dataType)).ToList();
             await Task.WhenAll(tasks);
         }
     }

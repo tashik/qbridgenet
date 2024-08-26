@@ -55,23 +55,20 @@ public class QuikBridge
         {
             if (registeredReq == null) return;
             _messageRegistry.TryGetMetadata(resp.id, out var qMessage);
-            switch (registeredReq?.MessageType)
-            {
-                case MessageType.Datasource:
-                    
-                    var result = resp.body?["result"]?.ToObject<List<int>>();
-                    if (result != null)
+            if (registeredReq?.MessageType == MessageType.Datasource) {
+                var result = resp.body?["result"]?.ToObject<List<int>>();
+                if (result != null)
+                {
+                    foreach (var r in result)
                     {
-                        foreach (var r in result)
-                        {
-                            var dsName = registeredReq.Ticker + "[" + registeredReq.Interval + "]";
-                            _dataSources[dsName] = r;
-                            Log.Debug("DataSource with name {dsName} has been created; callback is set up", dsName);
-                            await SetDsUpdateCallback(r, dsName);
-                            _ = GetGlobalEventAggregator().RaiseDataSourceSetEvent(dsName, qMessage);
-                        }
+                        var dsName = registeredReq.Ticker + "[" + registeredReq.Interval + "]";
+                        _dataSources[dsName] = r;
+                        Log.Debug("DataSource with name {dsName} has been created; callback is set up", dsName);
+                        await SetDsUpdateCallback(r, dsName);
+                        _ = GetGlobalEventAggregator().RaiseDataSourceSetEvent(dsName, qMessage);
                     }
-                    break;
+                }
+                    
             }
         });
         await _pHandler.StartClientAsync(host, port, cancellationToken);
@@ -124,6 +121,18 @@ public class QuikBridge
         };
         return await SendRequest(data, new MetaData() { MessageType = MessageType.Classes });
     }
+    
+    public async Task<int> GetClassSecurities(string classCode)
+    {
+        string[] args = {"\"" + classCode + "\""};
+        var data = new JsonReqData()
+        {
+            method = "invoke",
+            function = "getClassSecurities",
+            arguments = args
+        };
+        return await SendRequest(data, new ClassCode() { MessageType = MessageType.Securities, InstrumentClass = classCode }, false);
+    }
 
     public async Task<int> CreateDs(string classCode, string secCode, string interval)
     {
@@ -138,7 +147,7 @@ public class QuikBridge
         {
             MessageType = MessageType.Datasource,
             Ticker = secCode,
-            ClassCode = classCode,
+            InstrumentClass = classCode,
             Interval = interval
         };
         return await SendRequest(data, metaData, false);
@@ -210,7 +219,7 @@ public class QuikBridge
         var metaData = new Subscription()
         {
             MessageType = MessageType.SubscribeOrderbook,
-            ClassCode = classCode,
+            InstrumentClass = classCode,
             Ticker = secCode
         };
         return await SendRequest(data, metaData);
@@ -227,7 +236,7 @@ public class QuikBridge
         var metaData = new Subscription()
         {
             MessageType = MessageType.UnsubscribeOrderbook,
-            ClassCode = classCode,
+            InstrumentClass = classCode,
             Ticker = secCode
         };
         return await SendRequest(data, metaData);
@@ -245,7 +254,7 @@ public class QuikBridge
         var metaData = new Subscription()
         {
             MessageType = MessageType.SubscribeParam,
-            ClassCode = classCode,
+            InstrumentClass = classCode,
             Ticker = secCode
         };
         return await SendRequest(data, metaData);
@@ -263,7 +272,7 @@ public class QuikBridge
         var metaData = new Subscription()
         {
             MessageType = MessageType.UnsubscribeParam,
-            ClassCode = classCode,
+            InstrumentClass = classCode,
             Ticker = secCode
         };
         return await SendRequest(data, metaData);
@@ -283,7 +292,7 @@ public class QuikBridge
         var metaData = new TransactionMeta()
         {
             MessageType = MessageType.UnsubscribeParam,
-            ClassCode = transaction.CLASSCODE,
+            InstrumentClass = transaction.CLASSCODE,
             Ticker = transaction.SECCODE,
             Transaction = transaction
         };
@@ -324,9 +333,9 @@ public class QuikBridge
                     qMessage.Ticker = subscription.Ticker;
                 }
 
-                if (subscription.ClassCode != "")
+                if (subscription.InstrumentClass != "")
                 {
-                    qMessage.ClassCode = subscription.ClassCode;
+                    qMessage.ClassCode = subscription.InstrumentClass;
                 }
 
                 if (subscription is DataSource dsInit)

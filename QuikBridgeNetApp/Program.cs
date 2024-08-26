@@ -41,9 +41,9 @@ class Program
         var globalEventAggregator = client.GetGlobalEventAggregator();
         
         // Subscribe to the global events
-        globalEventAggregator.SubscribeToInstrumentClassesUpdate( instrumentClasses =>
+        globalEventAggregator.SubscribeToInstrumentClassesUpdate( (instrumentClasses, dataType) =>
         {
-            Log.Information("Instrument classes number arrived: {NumClasses}", instrumentClasses.Count);
+            Log.Information("{DataType} arrived: {NumClasses}", dataType.GetDescription(), instrumentClasses.Count);
             return Task.CompletedTask;
         });
         
@@ -81,6 +81,7 @@ class Program
         await client.StartAsync(host, port, cts.Token);
 
         await client.GetClassesList();
+        await client.GetClassSecurities("TQBR");
 
         await client.SubscribeToQuotesTableParams("SPBFUT", "SiU4", "LAST");
 
