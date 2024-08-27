@@ -35,7 +35,7 @@ class Program
         // Configure Serilog
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Debug()
-            .WriteTo.Console()
+            .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
         
         var globalEventAggregator = client.GetGlobalEventAggregator();
@@ -83,7 +83,7 @@ class Program
         await client.GetClassesList();
         await client.GetClassSecurities("TQBR");
 
-        await client.SubscribeToQuotesTableParams("SPBFUT", "SiU4", "LAST");
+        await client.SubscribeToQuotesTableParams("SPBOPT", "SiU4", "LAST");
 
         await client.SubscribeToOrderBook( "SPBFUT", "SiU4");
 

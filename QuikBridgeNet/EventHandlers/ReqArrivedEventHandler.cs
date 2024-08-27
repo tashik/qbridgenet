@@ -1,3 +1,4 @@
+using Newtonsoft.Json.Linq;
 using QuikBridgeNet.Entities;
 using QuikBridgeNet.Events;
 using Serilog;
@@ -54,13 +55,24 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
                     switch (funcName)
                     {
                         case "OnAllTrade":
-                            var resultToken = domainEvent.Req.body?["result"] ?? null;
-                            if (resultToken != null)
+                            var resultToken = domainEvent.Req.body?["arguments"] ?? null;
+                            if (resultToken is JArray jArray)
                             {
-                                var trade = resultToken.ToObject<AllTrade>();
-                                if (trade != null)
+                                var trades = new List<AllTrade>();
+                                foreach (var r in jArray)
                                 {
-                                    _ = _eventAggregator.RaiseNewAllTradeEvent(trade);
+                                    var oneTrade = r.ToObject<AllTrade>();
+                                    if (oneTrade != null)
+                                    {
+                                        trades.Add(oneTrade);
+                                    }
+                                }
+                                if (trades.Count > 0)
+                                {
+                                    foreach (var t in trades)
+                                    {
+                                        _ = _eventAggregator.RaiseNewAllTradeEvent(t);
+                                    }
                                 }
                             }
                             

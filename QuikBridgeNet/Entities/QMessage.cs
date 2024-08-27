@@ -10,4 +10,5 @@ public class QMessage
     public string ClassCode { get; set; } = "";
     public string Interval { get; set; } = "";
     public string DataSource { get; set; } = "";
+    public string ParamName { get; set; } = "";
 }

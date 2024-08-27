@@ -125,7 +125,7 @@ public class QuikBridgeProtocolHandler
             reqJson = reqJson.Remove(reqJson.Length - 1);
         }
         reqJson += "}}";
-        Log.Debug($"REQ: {reqJson}");
+        //Log.Debug($"REQ: {reqJson}");
         await SendMessageAsync(reqJson);
     }
 

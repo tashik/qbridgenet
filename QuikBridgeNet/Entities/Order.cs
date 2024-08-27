@@ -8,20 +8,20 @@ public class Order
     public string userid {get; set;} // Идентификатор трейдера
     public string firmid {get; set;} // Идентификатор фирмы
     public string account {get; set;} // Торговый счет
-    public float price {get; set;} // Цена
+    public double price {get; set;} // Цена
     public int qty {get; set;} // Количество в лотах
     public int balance {get; set;} // Остаток
-    public float value {get; set;} // Объем в денежных средствах
-    public float accruedint {get; set;} // 	Накопленный купонный доход
+    public double value {get; set;} // Объем в денежных средствах
+    public double accruedint {get; set;} // 	Накопленный купонный доход
     public string trans_id {get; set;} // Идентификатор транзакции
     public string client_code {get; set;} // Код клиента
-    public float price2 {get; set;} // Цена выкупа
+    public double price2 {get; set;} // Цена выкупа
     public string settlecode {get; set;} // Код расчетов
     public int uid {get; set;} // Идентификатор пользователя
     public int canceled_uid {get; set;} // Идентификатор пользователя, снявшего заявку
     public string exchange_code {get; set;} // Код биржи в торговой системе
     public int activation_time {get; set;} // Время активации
-    public int linkedorder {get; set;} // Номер заявки в торговой системе
+    public string linkedorder {get; set;} // Номер заявки в торговой системе
     public int expiry {get; set;} // Дата окончания срока действия заявки
     public string sec_code {get; set;} // Код бумаги заявки
     public string class_code {get; set;} // Код класса заявки
@@ -30,9 +30,9 @@ public class Order
     public string bank_acc_id {get; set;} // Идентификатор расчетного счета/кода в клиринговой организации
     public int value_entry_type {get; set;} // Способ указания объема заявки. Возможные значения: «0» – по количеству, «1» – по объему
     public int repoterm {get; set;} // Срок РЕПО, в календарных днях
-    public int repovalue {get; set;} // Сумма РЕПО на текущую дату. Отображается с точностью 2 знака
-    public int repo2value {get; set;} // Объём сделки выкупа РЕПО. Отображается с точностью 2 знака
-    public int repo_value_balance {get; set;} // Остаток суммы РЕПО за вычетом суммы привлеченных или предоставленных по сделке РЕПО денежных средств в неисполненной части заявки, по состоянию на текущую дату. Отображается с точностью 2 знака
+    public double repovalue {get; set;} // Сумма РЕПО на текущую дату. Отображается с точностью 2 знака
+    public double repo2value {get; set;} // Объём сделки выкупа РЕПО. Отображается с точностью 2 знака
+    public double repo_value_balance {get; set;} // Остаток суммы РЕПО за вычетом суммы привлеченных или предоставленных по сделке РЕПО денежных средств в неисполненной части заявки, по состоянию на текущую дату. Отображается с точностью 2 знака
     public int start_discount {get; set;} // Начальный дисконт, в %
     public string reject_reason {get; set;} // Причина отклонения заявки брокером
     public int ext_order_flags {get; set;} // Битовое поле для получения специфических параметров с западных площадок

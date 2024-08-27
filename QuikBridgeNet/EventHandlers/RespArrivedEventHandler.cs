@@ -1,3 +1,4 @@
+using Newtonsoft.Json.Linq;
 using QuikBridgeNet.Entities;
 using QuikBridgeNet.Events;
 using Serilog;
@@ -57,6 +58,17 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
             case MessageType.Low:
             case MessageType.Open:
             case MessageType.Volume:
+                
+                break;
+            case MessageType.GetParam:
+                var wrapper = msg.body?["result"] ?? null;
+                if (wrapper is JArray jArray)
+                {
+                    var valueToken = jArray[0]["param_value"];
+                    var value = valueToken?.ToString();
+
+                    _ = _eventAggregator.RaiseInstrumentParameterUpdateEvent(newMessage.Ticker, newMessage.ClassCode, newMessage.ParamName, value);
+                } 
                 
                 break;
             default:

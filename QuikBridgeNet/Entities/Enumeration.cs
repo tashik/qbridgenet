@@ -48,6 +48,9 @@ public enum MessageType
     OnTransReply,
     [Description("OnAllTrade")]
     OnAllTrade,
+    [Description("getParamEx2")]
+    GetParam,
+    
 }
 
 public enum QuikDataType

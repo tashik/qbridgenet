@@ -54,7 +54,6 @@ public class QuikBridge
         eventAggregator.SubscribeToServiceMessages(async (resp, registeredReq) =>
         {
             if (registeredReq == null) return;
-            _messageRegistry.TryGetMetadata(resp.id, out var qMessage);
             if (registeredReq?.MessageType == MessageType.Datasource) {
                 var result = resp.body?["result"]?.ToObject<List<int>>();
                 if (result != null)
@@ -65,10 +64,9 @@ public class QuikBridge
                         _dataSources[dsName] = r;
                         Log.Debug("DataSource with name {dsName} has been created; callback is set up", dsName);
                         await SetDsUpdateCallback(r, dsName);
-                        _ = GetGlobalEventAggregator().RaiseDataSourceSetEvent(dsName, qMessage);
+                        _ = GetGlobalEventAggregator().RaiseDataSourceSetEvent(dsName, registeredReq);
                     }
                 }
-                    
             }
         });
         await _pHandler.StartClientAsync(host, port, cancellationToken);
@@ -251,13 +249,33 @@ public class QuikBridge
             security = secCode,
             param = paramName
         };
-        var metaData = new Subscription()
+        var metaData = new ParamSubscription()
         {
             MessageType = MessageType.SubscribeParam,
             InstrumentClass = classCode,
-            Ticker = secCode
+            Ticker = secCode,
+            ParamName = paramName
         };
         return await SendRequest(data, metaData);
+    }
+    
+    public async Task<int> GetQuotesTableParam(string classCode, string secCode, string paramName)
+    {
+        string[] args = {$"\"{classCode}\",\"{secCode}\",\"{paramName}\""};
+        var data = new JsonReqData()
+        {
+            method = "invoke", 
+            function = MessageType.GetParam.GetDescription(),
+            arguments = args
+        };
+        var metaData = new ParamSubscription()
+        {
+            MessageType = MessageType.GetParam,
+            InstrumentClass = classCode,
+            Ticker = secCode,
+            ParamName = paramName
+        };
+        return await SendRequest(data, metaData, false);
     }
 
     public async Task<int> UnsubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
@@ -341,6 +359,11 @@ public class QuikBridge
                 if (subscription is DataSource dsInit)
                 {
                     qMessage.Interval = dsInit.Interval;
+                }
+
+                if (subscription is ParamSubscription paramSubscription)
+                {
+                    qMessage.ParamName = paramSubscription.ParamName;
                 }
                 break;
             case DatasourceCallback ds:
