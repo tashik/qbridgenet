@@ -53,6 +53,12 @@ class Program
             return Task.CompletedTask;
         });
         
+        globalEventAggregator.SubscribeToSecurityInfo( contract =>
+        {
+            Log.Information("Security contract arrived: {Security} {ClassCode} with lot size {LotSize}", contract.code, contract.class_code, contract.lot_size);
+            return Task.CompletedTask;
+        });
+        
         globalEventAggregator.SubscribeToInstrumentParameterUpdate( eventArgs =>
         {
             Log.Information("Instrument parameter {Name} current value {Val} ", eventArgs.ParamName, eventArgs.ParamValue);
@@ -80,14 +86,19 @@ class Program
         
         await client.StartAsync(host, port, cts.Token);
 
+        var testClassCode = "TQBR";
+        
+        var testTicker = "SBER";
+
         await client.GetClassesList();
-        await client.GetClassSecurities("TQBR");
+        await client.GetClassSecurities(testClassCode);
+        await client.GetSecurityInfo(testClassCode, testTicker);
 
-        await client.SubscribeToQuotesTableParams("SPBOPT", "SiU4", "LAST");
+        await client.SubscribeToQuotesTableParams(testClassCode, testTicker, "LAST");
 
-        await client.SubscribeToOrderBook( "SPBFUT", "SiU4");
+        await client.SubscribeToOrderBook( testClassCode, testTicker);
 
-        await client.CreateDs("SPBFUT", "SiU4", "5");
+        await client.CreateDs(testClassCode, testTicker, "5");
 
         //await client.SetGlobalCallback(MessageType.OnAllTrade);
         

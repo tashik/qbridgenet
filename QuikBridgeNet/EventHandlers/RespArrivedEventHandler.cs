@@ -53,6 +53,28 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
                 }
                 _ = _eventAggregator.RaiseInstrumentClassesUpdateEvent(tickers, QuikDataType.SecCode);
                 break;
+            case MessageType.SecurityContract:
+                var contractResultToken = domainEvent.Req.body?["result"] ?? null;
+                if (contractResultToken is JArray contractJArray)
+                {
+                    var contracts = new List<SecurityContract>();
+                    foreach (var r in contractJArray)
+                    {
+                        var oneContract = r.ToObject<SecurityContract>();
+                        if (oneContract != null)
+                        {
+                            contracts.Add(oneContract);
+                        }
+                    }
+                    if (contracts.Count > 0)
+                    {
+                        foreach (var t in contracts)
+                        {
+                            _ = _eventAggregator.RaiseSecurityInfoEvent(t);
+                        }
+                    }
+                }
+                break;
             case MessageType.Close:
             case MessageType.High:
             case MessageType.Low:

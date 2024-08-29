@@ -11,12 +11,14 @@ public delegate Task OrderBookUpdateHandler(OrderBookUpdateEventArgs args);
 public delegate Task ServiceMessageHandler(JsonMessage resp, QMessage? registeredMsg);
 public delegate Task DataSourceSetHandler(string dataSourceName, QMessage? dataSourceReq);
 public delegate Task NewAllTradeHandler(AllTrade trade);
+public delegate Task SecurityInfoHandler(SecurityContract contract);
 
 public class QuikBridgeEventAggregator
 {
     // Channels
     private readonly Channel<(List<string> data, QuikDataType dataType)> _instrumentClassesUpdateChannel = Channel.CreateUnbounded<(List<string>, QuikDataType)>();
     private readonly Channel<AllTrade> _allTradesChannel = Channel.CreateUnbounded<AllTrade>();
+    private readonly Channel<SecurityContract> _contractsChannel = Channel.CreateUnbounded<SecurityContract>();
     private readonly Channel<InstrumentParametersUpdateEventArgs> _instrumentParameterUpdateChannel = Channel.CreateUnbounded<InstrumentParametersUpdateEventArgs>();
     private readonly Channel<OrderBookUpdateEventArgs> _orderBookUpdateChannel = Channel.CreateUnbounded<OrderBookUpdateEventArgs>();
     private readonly Channel<(JsonMessage resp, QMessage? registeredMsg)> _serviceMessagesChannel = Channel.CreateUnbounded<(JsonMessage, QMessage?)>();
@@ -29,6 +31,7 @@ public class QuikBridgeEventAggregator
     private readonly ConcurrentBag<ServiceMessageHandler> _serviceMessageHandlers = new();
     private readonly ConcurrentBag<DataSourceSetHandler> _dataSourceSetHandlers = new();
     private readonly ConcurrentBag<NewAllTradeHandler> _allTradeHandlers = new();
+    private readonly ConcurrentBag<SecurityInfoHandler> _securityInfoHandlers = new();
 
     // Raise events
     public async Task RaiseServiceMessageArrivedEvent(JsonMessage resp, QMessage? registeredMsg)
@@ -44,6 +47,11 @@ public class QuikBridgeEventAggregator
     public async Task RaiseNewAllTradeEvent(AllTrade trade)
     {
         await _allTradesChannel.Writer.WriteAsync(trade);
+    }
+    
+    public async Task RaiseSecurityInfoEvent(SecurityContract contract)
+    {
+        await _contractsChannel.Writer.WriteAsync(contract);
     }
 
     public async Task RaiseInstrumentClassesUpdateEvent(List<string> instrumentClasses, QuikDataType dataType)
@@ -110,6 +118,11 @@ public class QuikBridgeEventAggregator
         _allTradeHandlers.Add(handler);
         _ = ProcessNewAllTrade();
     }
+    public void SubscribeToSecurityInfo(SecurityInfoHandler handler)
+    {
+        _securityInfoHandlers.Add(handler);
+        _ = ProcessSecurityInfo();
+    }
 
     // Internal processing methods
     private async Task ProcessInstrumentClassesUpdate()
@@ -128,6 +141,16 @@ public class QuikBridgeEventAggregator
         {
             var handlers = _allTradeHandlers.ToArray();
             var tasks = handlers.Select(handler => handler(trade)).ToList();
+            await Task.WhenAll(tasks);
+        }
+    }
+    
+    private async Task ProcessSecurityInfo()
+    {
+        await foreach (var contract in _contractsChannel.Reader.ReadAllAsync())
+        {
+            var handlers = _securityInfoHandlers.ToArray();
+            var tasks = handlers.Select(handler => handler(contract)).ToList();
             await Task.WhenAll(tasks);
         }
     }

@@ -131,6 +131,18 @@ public class QuikBridge
         };
         return await SendRequest(data, new ClassCode() { MessageType = MessageType.Securities, InstrumentClass = classCode }, false);
     }
+    
+    public async Task<int> GetSecurityInfo(string classCode, string secCode)
+    {
+        string[] args = {"\"" + classCode + "\",\"" + secCode + "\""};
+        var data = new JsonReqData()
+        {
+            method = "invoke",
+            function = "getSecurityInfo",
+            arguments = args
+        };
+        return await SendRequest(data, new Subscription() { MessageType = MessageType.SecurityContract, InstrumentClass = classCode, Ticker = secCode}, false);
+    }
 
     public async Task<int> CreateDs(string classCode, string secCode, string interval)
     {

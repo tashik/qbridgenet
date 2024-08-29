@@ -16,6 +16,8 @@ public enum MessageType
     Classes,
     [Description("getClassSecurities")]
     Securities,
+    [Description("getSecurityInfo")]
+    SecurityContract,
     [Description("create_datasource")]
     Datasource,
     [Description("datasource_callback")]
