@@ -4,8 +4,10 @@ namespace QuikBridgeNet.Entities;
 
 public enum MessageType
 {
-    [Description("getOrderBook")]
-    OrderBook,
+    [Description("init_orderbook")]
+    OrderBookInit,
+    [Description("get_quotes_snapshot")]
+    OrderBookSnapshot,
     [Description("subscribe_orderbook")]
     SubscribeOrderbook,
     [Description("unsubscribe_orderbook")]

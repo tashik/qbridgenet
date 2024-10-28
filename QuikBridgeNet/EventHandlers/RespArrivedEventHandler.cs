@@ -93,6 +93,18 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
                 } 
                 
                 break;
+            case MessageType.OrderBookSnapshot:
+                var jOrderBook = msg.body?["result"] ?? null;
+                if (jOrderBook is JArray { Count: > 0 } orderBookJArray)
+                {
+                    var orderBookToken = orderBookJArray[0];
+                    var orderBook = orderBookToken.ToObject<OrderBook>();
+                    if (orderBook != null)
+                    {
+                        _ = _eventAggregator.RaiseOrderBookUpdateEvent(newMessage.Ticker, newMessage.ClassCode, orderBook);
+                    }
+                }
+                break;
             default:
                 _ = _eventAggregator.RaiseServiceMessageArrivedEvent(msg, newMessage);
                 break;

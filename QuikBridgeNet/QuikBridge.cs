@@ -67,6 +67,14 @@ public class QuikBridge
                         _ = GetGlobalEventAggregator().RaiseDataSourceSetEvent(dsName, registeredReq);
                     }
                 }
+            } else if (registeredReq?.MessageType == MessageType.OrderBookInit)
+            {
+                var result = resp.body?["result"]?.ToObject<List<bool>>();
+                if (result is { Count: > 0 } && result[0])
+                {
+                    await GetOrderBookSnapshot(registeredReq.ClassCode, registeredReq.Ticker);
+                    await DoSubscribeToOrderBook(registeredReq.ClassCode, registeredReq.Ticker);
+                }
             }
         });
         await _pHandler.StartClientAsync(host, port, cancellationToken);
@@ -217,8 +225,49 @@ public class QuikBridge
         };
         return await SendRequest(data, metaData);
     }
+    
+    private async Task<int> InitOrderBook(string classCode, string secCode)
+    {
+        string[] args = {"\"" + classCode + "\",\"" + secCode + "\""};
+        var data = new JsonReqData()
+        {
+            method = "invoke",
+            function = "Subscribe_Level_II_Quotes",
+            arguments = args
+        };
+        var metaData = new Subscription()
+        {
+            MessageType = MessageType.OrderBookInit,
+            InstrumentClass = classCode,
+            Ticker = secCode
+        };
+        return await SendRequest(data, metaData, false);
+    }
+    
+    public async Task<int> GetOrderBookSnapshot(string classCode, string secCode)
+    {
+        string[] args = {"\"" + classCode + "\",\"" + secCode + "\""};
+        var data = new JsonReqData()
+        {
+            method = "invoke",
+            function = "getQuoteLevel2",
+            arguments = args
+        };
+        var metaData = new Subscription()
+        {
+            MessageType = MessageType.OrderBookSnapshot,
+            InstrumentClass = classCode,
+            Ticker = secCode
+        };
+        return await SendRequest(data, metaData, false);
+    }
 
     public async Task<int> SubscribeToOrderBook(string classCode, string secCode)
+    {
+        return await InitOrderBook(classCode, secCode);
+    }
+
+    private async Task<int> DoSubscribeToOrderBook(string classCode, string secCode)
     {
         var data = new JsonCommandDataSubscribeQuotes()
         {
