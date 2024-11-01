@@ -64,3 +64,15 @@ public enum QuikDataType
     [Description("Код инструмента")]
     SecCode
 }
+
+public enum QuikBridgeConnectionState
+{
+    [Description("Подключено")]
+    Connected,
+    [Description("Отключено")]
+    Disconnected,
+    [Description("Ожидание подключения")]
+    Pending,
+    [Description("Ошибка")]
+    Error
+}

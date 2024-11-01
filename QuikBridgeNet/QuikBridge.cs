@@ -22,7 +22,46 @@ public class QuikBridge
 
     private readonly IServiceProvider _serviceProvider;
 
-    private Dictionary<string, object> _dataSources = new();
+    private readonly Dictionary<string, object> _dataSources = new();
+
+    private QuikBridgeConnectionState _connectionState = QuikBridgeConnectionState.Disconnected;
+
+    private bool _isExtendedLogging = true;
+    
+    #endregion
+    
+    #region Properties
+
+    public bool IsExtendedLogging
+    {
+        get => _isExtendedLogging;
+        set
+        {
+            if (value == _isExtendedLogging) return;
+            _isExtendedLogging = value;
+            _pHandler.IsExtendedLogging = value;
+        }
+    }
+
+    public QuikBridgeConnectionState ConnectionState
+    {
+        get => _connectionState;
+        set
+        {
+            if (value == _connectionState) return;
+            if (value == QuikBridgeConnectionState.Error)
+            {
+                OnConnectionStateChanged(value);
+                _connectionState = QuikBridgeConnectionState.Disconnected;
+            }
+            else
+            {
+                _connectionState = value;
+            }
+            
+            OnConnectionStateChanged(_connectionState);
+        }
+    }
     
     #endregion
     
@@ -50,35 +89,48 @@ public class QuikBridge
 
     public async Task StartAsync(string host, int port, CancellationToken cancellationToken)
     {
-        var eventAggregator = GetGlobalEventAggregator();
-        eventAggregator.SubscribeToServiceMessages(async (resp, registeredReq) =>
+        if (ConnectionState != QuikBridgeConnectionState.Disconnected) return;
+        
+        ConnectionState = QuikBridgeConnectionState.Pending;
+        var isConnectionEstablished = await _pHandler.StartClientAsync(host, port, cancellationToken);
+        
+        if (isConnectionEstablished)
         {
-            if (registeredReq == null) return;
-            if (registeredReq?.MessageType == MessageType.Datasource) {
-                var result = resp.body?["result"]?.ToObject<List<int>>();
-                if (result != null)
-                {
-                    foreach (var r in result)
+            ConnectionState = QuikBridgeConnectionState.Connected;
+            var eventAggregator = GetGlobalEventAggregator();
+            eventAggregator.SubscribeToServiceMessages(async (resp, registeredReq) =>
+            {
+                if (registeredReq == null) return;
+                if (registeredReq.MessageType == MessageType.Datasource) {
+                    var result = resp.body?["result"]?.ToObject<List<int>>();
+                    if (result != null)
                     {
-                        var dsName = registeredReq.Ticker + "[" + registeredReq.Interval + "]";
-                        _dataSources[dsName] = r;
-                        Log.Debug("DataSource with name {dsName} has been created; callback is set up", dsName);
-                        await SetDsUpdateCallback(r, dsName);
-                        _ = GetGlobalEventAggregator().RaiseDataSourceSetEvent(dsName, registeredReq);
+                        foreach (var r in result)
+                        {
+                            var dsName = registeredReq.Ticker + "[" + registeredReq.Interval + "]";
+                            _dataSources[dsName] = r;
+                            if (IsExtendedLogging)
+                                Log.Debug("DataSource with name {dsName} has been created; callback is set up", dsName);
+                            await SetDsUpdateCallback(r, dsName);
+                            _ = GetGlobalEventAggregator().RaiseDataSourceSetEvent(dsName, registeredReq);
+                        }
+                    }
+                } else if (registeredReq.MessageType == MessageType.OrderBookInit)
+                {
+                    var result = resp.body?["result"]?.ToObject<List<bool>>();
+                    if (result is { Count: > 0 } && result[0])
+                    {
+                        await GetOrderBookSnapshot(registeredReq.ClassCode, registeredReq.Ticker);
+                        await DoSubscribeToOrderBook(registeredReq.ClassCode, registeredReq.Ticker);
                     }
                 }
-            } else if (registeredReq?.MessageType == MessageType.OrderBookInit)
-            {
-                var result = resp.body?["result"]?.ToObject<List<bool>>();
-                if (result is { Count: > 0 } && result[0])
-                {
-                    await GetOrderBookSnapshot(registeredReq.ClassCode, registeredReq.Ticker);
-                    await DoSubscribeToOrderBook(registeredReq.ClassCode, registeredReq.Ticker);
-                }
-            }
-        });
-        await _pHandler.StartClientAsync(host, port, cancellationToken);
-        await SetupCallbacks();
+            });
+            await SetupCallbacks();
+        }
+        else
+        {
+            ConnectionState = QuikBridgeConnectionState.Error;
+        }
     }
 
     private async Task SetupCallbacks()
@@ -114,7 +166,8 @@ public class QuikBridge
             data = reqData ?? data
         };
         await _pHandler.SendReqAsync(msg, preprocessArguments);
-        Log.Debug($"New message id: {msgId}");
+        if (IsExtendedLogging)
+            Log.Debug($"New message id: {msgId}");
         return msgId;
     }
 
@@ -267,7 +320,7 @@ public class QuikBridge
         return await InitOrderBook(classCode, secCode);
     }
 
-    private async Task<int> DoSubscribeToOrderBook(string classCode, string secCode)
+    private async Task DoSubscribeToOrderBook(string classCode, string secCode)
     {
         var data = new JsonCommandDataSubscribeQuotes()
         {
@@ -281,7 +334,7 @@ public class QuikBridge
             InstrumentClass = classCode,
             Ticker = secCode
         };
-        return await SendRequest(data, metaData);
+        await SendRequest(data, metaData);
     }
 
     public async Task<int> UnsubscribeToOrderBook(string classCode, string secCode)
@@ -434,6 +487,11 @@ public class QuikBridge
 
         _messageRegistry.RegisterMessage(id, qMessage);
     }
+    
+    private void OnConnectionStateChanged(QuikBridgeConnectionState newState)
+    {
+        ConnectionStateChanged?.Invoke(newState);
+    }
 
     public void Finish()
     {
@@ -442,7 +500,15 @@ public class QuikBridge
         eventAggregator.Close();
         Thread.Sleep(1000);
         _pHandler.StopClient();
+        ConnectionState = QuikBridgeConnectionState.Disconnected;
     }
+    
+    #endregion
+    
+    #region Delegates and events
+    
+    public delegate void ConnectionStateChangedEventHandler(QuikBridgeConnectionState newConnectionState);
+    public event ConnectionStateChangedEventHandler? ConnectionStateChanged;
     
     #endregion
 }

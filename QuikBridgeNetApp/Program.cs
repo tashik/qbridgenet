@@ -3,6 +3,7 @@ using QuikBridgeNet;
 using QuikBridgeNet.Entities;
 using QuikBridgeNet.Helpers;
 using Serilog;
+using Serilog.Events;
 
 class Program
 {
@@ -23,6 +24,8 @@ class Program
 
         // Resolve the client
         var client = serviceProvider.GetRequiredService<QuikBridge>();
+        client.IsExtendedLogging = false;
+        client.ConnectionStateChanged += OnBridgeConnectionStateChanged;
         var dataSource = "";
         
         client.RegisterDataSourceCallback((msg) =>
@@ -107,5 +110,10 @@ class Program
 
         client.Finish();
         await Log.CloseAndFlushAsync();
+    }
+
+    static void OnBridgeConnectionStateChanged(QuikBridgeConnectionState newState)
+    {
+        Log.Information($"Изменилось состояние подключения моста на {newState.GetDescription()}");
     }
 }

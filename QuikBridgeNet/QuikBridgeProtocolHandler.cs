@@ -29,9 +29,12 @@ public class QuikBridgeProtocolHandler
     
     private readonly BlockingCollection<JsonMessage> _dataQueue = new();
 
+    public bool IsExtendedLogging { get; set; } = true;
+
     public QuikBridgeProtocolHandler(QuikBridgeEventDispatcher eventDispatcher)
     {
         _eventDispatcher = eventDispatcher;
+        _isStopped = true;
         Task.Run(ProcessQueue);
     }
     
@@ -40,18 +43,28 @@ public class QuikBridgeProtocolHandler
         _datasourceCallbackReceived = callback;
     }
 
-    public async Task StartClientAsync(string host, int port, CancellationToken cancellationToken)
+    public async Task<bool> StartClientAsync(string host, int port, CancellationToken cancellationToken)
     {
-        _clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        await _clientSocket.ConnectAsync(host, port, cancellationToken);
-        Log.Information("Connected to server at {ServerIP}:{Port}", host, port);
+        try
+        {
+            _clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            await _clientSocket.ConnectAsync(host, port, cancellationToken);
+            Log.Information("Connected to server at {ServerIP}:{Port}", host, port);
 
-        _isStopped = false;
-        _ = Task.Run(() => ReceiveDataAsync(cancellationToken), cancellationToken);
+            _isStopped = false;
+            _ = Task.Run(() => ReceiveDataAsync(cancellationToken), cancellationToken);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Information("Connected to server at {ServerIP}:{Port} failed with error: {Error}", host, port, ex.Message);
+            return false;
+        }
     }
     
     private void ProcessQueue()
     {
+        if (_isStopped) return;
         foreach (var data in _dataQueue.GetConsumingEnumerable())
         {
             _datasourceCallbackReceived?.Invoke(data);
@@ -137,7 +150,8 @@ public class QuikBridgeProtocolHandler
             {
                 byte[] data = Encoding.UTF8.GetBytes(message);
                 await _clientSocket.SendAsync(data, SocketFlags.None);
-                Log.Information("Message sent: {Message}", message);
+                if (IsExtendedLogging)
+                    Log.Information("Message sent: {Message}", message);
             }
         }
         catch (Exception e)
@@ -285,7 +299,8 @@ public class QuikBridgeProtocolHandler
                     break;
                 }
                 await OnDataReceived(jDoc);
-                Log.Debug("RESP {Body}", jDoc.ToString());
+                if (IsExtendedLogging)
+                    Log.Debug("RESP {Body}", jDoc.ToString());
                 // Remove processed JSON from the buffer
                 int jsonEndIndex = FindEndOfJson(accumulatedString);
                 accumulatedString = accumulatedString.Substring(jsonEndIndex + 1);
