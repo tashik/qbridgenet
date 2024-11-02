@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using QuikBridgeNet.Entities;
@@ -27,6 +28,8 @@ public class QuikBridge
     private QuikBridgeConnectionState _connectionState = QuikBridgeConnectionState.Disconnected;
 
     private bool _isExtendedLogging = true;
+    
+    private readonly ConcurrentDictionary<string, int> _paramSubscriptions = new();
     
     #endregion
     
@@ -297,7 +300,7 @@ public class QuikBridge
         return await SendRequest(data, metaData, false);
     }
     
-    public async Task<int> GetOrderBookSnapshot(string classCode, string secCode)
+    private async Task<int> GetOrderBookSnapshot(string classCode, string secCode)
     {
         string[] args = {"\"" + classCode + "\",\"" + secCode + "\""};
         var data = new JsonReqData()
@@ -356,23 +359,42 @@ public class QuikBridge
 
     public async Task<int> SubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
     {
-        var data = new JsonCommandDataSubscribeParam()
+        var key = $"{classCode}:{secCode}:{paramName}";
+
+        if (!_paramSubscriptions.ContainsKey(key))
         {
-            method = "subscribeParamChanges",
-            cl = classCode,
-            security = secCode,
-            param = paramName
-        };
-        var metaData = new ParamSubscription()
-        {
-            MessageType = MessageType.SubscribeParam,
-            InstrumentClass = classCode,
-            Ticker = secCode,
-            ParamName = paramName
-        };
-        return await SendRequest(data, metaData);
+            if (_paramSubscriptions.TryAdd(key, 0))
+            {
+                try
+                {
+                    var data = new JsonCommandDataSubscribeParam()
+                    {
+                        method = "subscribeParamChanges",
+                        cl = classCode,
+                        security = secCode,
+                        param = paramName
+                    };
+                    var metaData = new ParamSubscription()
+                    {
+                        MessageType = MessageType.SubscribeParam,
+                        InstrumentClass = classCode,
+                        Ticker = secCode,
+                        ParamName = paramName
+                    };
+                    var msgId = await SendRequest(data, metaData);
+                    _paramSubscriptions[key] = msgId;
+                    return msgId;
+                }
+                catch
+                {
+                    _paramSubscriptions.TryRemove(key, out _);
+                    throw;
+                }
+            }
+        }
+        return _paramSubscriptions[key];
     }
-    
+
     public async Task<int> GetQuotesTableParam(string classCode, string secCode, string paramName)
     {
         string[] args = {$"\"{classCode}\",\"{secCode}\",\"{paramName}\""};
