@@ -9,7 +9,23 @@ public static class QuikBridgeServiceConfiguration
 {
     private static IServiceProvider _serviceProvider;
 
-    public static void ConfigureServices()
+    public static void ConfigureServices(IServiceCollection serviceCollection)
+    {
+        serviceCollection.AddSingleton<QuikBridgeEventAggregator>();
+        serviceCollection.AddSingleton<ILogger>(provider => new LoggerConfiguration()
+            .WriteTo.Console()
+            .CreateLogger());
+        
+        serviceCollection.AddSingleton<MessageRegistry>();
+        serviceCollection.AddTransient<IDomainEventHandler<RespArrivedEvent>, RespArrivedEventHandler>();
+        serviceCollection.AddTransient<IDomainEventHandler<ReqArrivedEvent>, ReqArrivedEventHandler>();
+        serviceCollection.AddTransient<IDomainEventHandler<SocketConnectionCloseEvent>, SocketConnectionCloseEventHandler>();
+        serviceCollection.AddSingleton<QuikBridgeEventDispatcher>();
+
+        _serviceProvider = serviceCollection.BuildServiceProvider();
+    }
+    
+    public static void ConfigureServicesForBackground()
     {
         var serviceCollection = new ServiceCollection();
 
@@ -23,6 +39,7 @@ public static class QuikBridgeServiceConfiguration
         serviceCollection.AddTransient<IDomainEventHandler<ReqArrivedEvent>, ReqArrivedEventHandler>();
         serviceCollection.AddTransient<IDomainEventHandler<SocketConnectionCloseEvent>, SocketConnectionCloseEventHandler>();
         serviceCollection.AddSingleton<QuikBridgeEventDispatcher>();
+        serviceCollection.AddSingleton<QuikBridgeService>();
 
         _serviceProvider = serviceCollection.BuildServiceProvider();
     }

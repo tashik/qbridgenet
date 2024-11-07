@@ -43,7 +43,7 @@ public class QuikBridgeProtocolHandler
         _datasourceCallbackReceived = callback;
     }
 
-    public async Task<bool> StartClientAsync(string host, int port, CancellationToken cancellationToken)
+    public async Task<bool> StartClientAsync(string host, int port, CancellationToken cancellationToken, bool skipStartThread = false)
     {
         try
         {
@@ -52,7 +52,8 @@ public class QuikBridgeProtocolHandler
             Log.Information("Connected to server at {ServerIP}:{Port}", host, port);
 
             _isStopped = false;
-            _ = Task.Run(() => ReceiveDataAsync(cancellationToken), cancellationToken);
+            if (!skipStartThread)
+                _ = Task.Run(() => ReceiveDataAsync(cancellationToken), cancellationToken);
             return true;
         }
         catch (Exception ex)
@@ -173,30 +174,7 @@ public class QuikBridgeProtocolHandler
         {
             while (!_isStopped && !cancellationToken.IsCancellationRequested)
             {
-                try
-                {
-                    int bytesRead = await _clientSocket.ReceiveAsync(new ArraySegment<byte>(_buffer), SocketFlags.None);
-
-                    if (bytesRead > 0)
-                    {
-                        string receivedData = Encoding.UTF8.GetString(_buffer, 0, bytesRead);
-                        _accumulatedData.Append(receivedData);
-
-                        await ProcessBuffer();
-                    }
-                    else
-                    {
-                        if (!_clientSocket.Connected)
-                        {
-                            Log.Warning("Connection closed by the server.");
-                            break;
-                        }
-                    }
-                }
-                catch (Exception e)
-                {
-                    Log.Error("Error in ReceiveDataAsync Processing: {0}", e.Message);
-                }
+                await ReceiveMessageAsync(cancellationToken);
             }
         } catch (OperationCanceledException)
         {
@@ -205,6 +183,34 @@ public class QuikBridgeProtocolHandler
         catch (Exception e)
         {
             Log.Error("Error in ReceiveDataAsync: {0}", e.Message);
+        }
+    }
+
+    public async Task ReceiveMessageAsync(CancellationToken token)
+    {
+        if (_clientSocket == null || token.IsCancellationRequested) return;
+        try
+        {
+            int bytesRead = await _clientSocket.ReceiveAsync(new ArraySegment<byte>(_buffer), SocketFlags.None);
+
+            if (bytesRead > 0)
+            {
+                string receivedData = Encoding.UTF8.GetString(_buffer, 0, bytesRead);
+                _accumulatedData.Append(receivedData);
+
+                await ProcessBuffer();
+            }
+            else
+            {
+                if (!_clientSocket.Connected)
+                {
+                    Log.Warning("Connection closed by the server.");
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Error("Error in ReceiveDataAsync Processing: {0}", e.Message);
         }
     }
 

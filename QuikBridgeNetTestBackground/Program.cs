@@ -1,24 +1,17 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using QuikBridgeNet;
 using QuikBridgeNet.Entities;
 using QuikBridgeNet.Helpers;
 using Serilog;
 
-class Program
+public class Program
 {
-    static async Task Main(string[] args)
+    public static async Task Main(string[] args)
     {
-        string host = "127.0.0.1";
-        int port = 57777;
-
-        var serviceCollection = new ServiceCollection();
-        QuikBridgeServiceConfiguration.ConfigureServices(serviceCollection);
+        var host = CreateHostBuilder(args).Build();
+        var client = host.Services.GetRequiredService<QuikBridgeService>();
         
-        var serviceProvider = 
-            serviceCollection.AddSingleton<QuikBridge>()
-            .BuildServiceProvider();
-        
-        var client = serviceProvider.GetRequiredService<QuikBridge>();
         client.IsExtendedLogging = false;
         client.ConnectionStateChanged += OnBridgeConnectionStateChanged;
         var dataSource = "";
@@ -27,14 +20,7 @@ class Program
         {
             Log.Information("DataSource message {body}", msg.body?.ToString());
         });
-        
         CancellationTokenSource cts = new CancellationTokenSource();
-        
-        // Configure Serilog
-        Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Debug()
-            .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}")
-            .CreateLogger();
         
         var globalEventAggregator = client.GetGlobalEventAggregator();
         
@@ -82,8 +68,9 @@ class Program
             await client.GetBar(dataSourceName, MessageType.Close, 1);
         });
         
-        await client.StartAsync(host, port, cts.Token);
-
+        await client.StartAsync( "127.0.0.1", 57777, cts.Token);
+        await host.RunAsync(cts.Token);
+        
         var testClassCode = "TQBR";
         
         var testTicker = "SBER";
@@ -106,9 +93,23 @@ class Program
         client.Finish();
         await Log.CloseAndFlushAsync();
     }
-
+    
     static void OnBridgeConnectionStateChanged(QuikBridgeConnectionState newState)
     {
         Log.Information($"Изменилось состояние подключения моста на {newState.GetDescription()}");
     }
+
+    public static IHostBuilder CreateHostBuilder(string[] args) =>
+        Host.CreateDefaultBuilder(args)
+            .ConfigureServices((hostContext, services) =>
+            {
+                QuikBridgeServiceConfiguration.ConfigureServices(services);
+                services.AddHostedService<QuikBridgeService>();
+                
+                // Configure Serilog
+                Log.Logger = new LoggerConfiguration()
+                    .MinimumLevel.Debug()
+                    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+                    .CreateLogger();
+            });
 }

@@ -1,25 +1,27 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json;
 using QuikBridgeNet.Entities;
 using QuikBridgeNet.Entities.CommandData;
 using QuikBridgeNet.Entities.MessageMeta;
 using QuikBridgeNet.Helpers;
 using Serilog;
+using Serilog.Core;
 
 namespace QuikBridgeNet;
 
-public delegate void DatasourceCallbackReceived(JsonMessage jMsg);
-
-public class QuikBridge
+public class QuikBridgeService : BackgroundService
 {
     #region Fields
-
-    private readonly QuikBridgeEventAggregator _eventAggregator;
+    
     private readonly QuikBridgeProtocolHandler _pHandler;
 
     private readonly MessageIndexer _msgIndexer;
 
     private readonly MessageRegistry _messageRegistry;
+
+    private readonly IServiceProvider _serviceProvider;
 
     private readonly Dictionary<string, object> _dataSources = new();
 
@@ -68,15 +70,15 @@ public class QuikBridge
     
     #region Constructors
 
-    public QuikBridge(QuikBridgeEventDispatcher eventDispatcher, MessageRegistry messageRegistry, QuikBridgeEventAggregator eventAggregator)
+    public QuikBridgeService(IServiceProvider serviceProvider)
     {
-        _pHandler = new QuikBridgeProtocolHandler(eventDispatcher);
+        _serviceProvider = serviceProvider;
         
-        _messageRegistry = messageRegistry;
+        _pHandler = new QuikBridgeProtocolHandler(serviceProvider.GetRequiredService<QuikBridgeEventDispatcher>());
+        
+        _messageRegistry = serviceProvider.GetRequiredService<MessageRegistry>();
         
         _msgIndexer = new MessageIndexer();
-
-        _eventAggregator = eventAggregator;
     }
     
     #endregion
@@ -85,7 +87,7 @@ public class QuikBridge
     
     public QuikBridgeEventAggregator GetGlobalEventAggregator()
     {
-        return _eventAggregator;
+        return _serviceProvider.GetRequiredService<QuikBridgeEventAggregator>();
     }
 
     public async Task StartAsync(string host, int port, CancellationToken cancellationToken)
@@ -93,7 +95,7 @@ public class QuikBridge
         if (ConnectionState != QuikBridgeConnectionState.Disconnected) return;
         
         ConnectionState = QuikBridgeConnectionState.Pending;
-        var isConnectionEstablished = await _pHandler.StartClientAsync(host, port, cancellationToken);
+        var isConnectionEstablished = await _pHandler.StartClientAsync(host, port, cancellationToken, true);
         
         if (isConnectionEstablished)
         {
@@ -131,6 +133,27 @@ public class QuikBridge
         else
         {
             ConnectionState = QuikBridgeConnectionState.Error;
+        }
+    }
+    
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                if (_connectionState == QuikBridgeConnectionState.Connected)
+                {
+                    await _pHandler.ReceiveMessageAsync(stoppingToken);
+                }
+                else
+                {
+                    await Task.Delay(1000, stoppingToken); // Poll until connection is established
+                }
+            }
+        } catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            Log.Warning("Cancellation received");
         }
     }
 
