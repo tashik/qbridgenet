@@ -11,20 +11,15 @@ class Program
     {
         string host = "127.0.0.1";
         int port = 57777;
+
+        var serviceCollection = new ServiceCollection();
+        QuikBridgeServiceConfiguration.ConfigureServices(serviceCollection);
         
-        QuikBridgeServiceConfiguration.ConfigureServices();
-        
-        var serviceProvider = new ServiceCollection()
-            .AddSingleton<QuikBridge>(provider =>
-            {
-                var bridge = new QuikBridge(QuikBridgeServiceConfiguration.ServiceProvider);
-                return bridge;
-            })
-            .BuildServiceProvider();
+        var serviceProvider = serviceCollection.BuildServiceProvider();
 
         // Resolve the client
         var client = serviceProvider.GetRequiredService<QuikBridge>();
-        client.IsExtendedLogging = false;
+        client.IsExtendedLogging = true;
         client.ConnectionStateChanged += OnBridgeConnectionStateChanged;
         var dataSource = "";
         
@@ -41,7 +36,7 @@ class Program
             .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
         
-        var globalEventAggregator = client.GetGlobalEventAggregator();
+        var globalEventAggregator = serviceProvider.GetRequiredService<QuikBridgeEventAggregator>();
         
         // Subscribe to the global events
         globalEventAggregator.SubscribeToInstrumentClassesUpdate( (instrumentClasses, dataType) =>

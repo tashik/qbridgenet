@@ -35,7 +35,6 @@ public class QuikBridgeProtocolHandler
     {
         _eventDispatcher = eventDispatcher;
         _isStopped = true;
-        Task.Run(ProcessQueue);
     }
     
     public void RegisterDataSourceCallback(DatasourceCallbackReceived callback)
@@ -52,6 +51,7 @@ public class QuikBridgeProtocolHandler
             Log.Information("Connected to server at {ServerIP}:{Port}", host, port);
 
             _isStopped = false;
+            _ = Task.Run(ProcessQueue, cancellationToken);
             _ = Task.Run(() => ReceiveDataAsync(cancellationToken), cancellationToken);
             return true;
         }
@@ -64,10 +64,12 @@ public class QuikBridgeProtocolHandler
     
     private void ProcessQueue()
     {
-        if (_isStopped) return;
-        foreach (var data in _dataQueue.GetConsumingEnumerable())
+        while (!_isStopped)
         {
-            _datasourceCallbackReceived?.Invoke(data);
+            foreach (var data in _dataQueue.GetConsumingEnumerable())
+            {
+                _datasourceCallbackReceived?.Invoke(data);
+            }
         }
     }
 

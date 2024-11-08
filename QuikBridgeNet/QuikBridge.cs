@@ -11,17 +11,14 @@ namespace QuikBridgeNet;
 
 public delegate void DatasourceCallbackReceived(JsonMessage jMsg);
 
-public class QuikBridge
+public class QuikBridge(
+    QuikBridgeProtocolHandler protocolHandler,
+    MessageRegistry msgRegistry,
+    QuikBridgeEventAggregator eventAggregator)
 {
     #region Fields
-    
-    private readonly QuikBridgeProtocolHandler _pHandler;
 
-    private readonly MessageIndexer _msgIndexer;
-
-    private readonly MessageRegistry _messageRegistry;
-
-    private readonly IServiceProvider _serviceProvider;
+    private readonly MessageIndexer _msgIndexer = new();
 
     private readonly Dictionary<string, object> _dataSources = new();
 
@@ -42,7 +39,7 @@ public class QuikBridge
         {
             if (value == _isExtendedLogging) return;
             _isExtendedLogging = value;
-            _pHandler.IsExtendedLogging = value;
+            protocolHandler.IsExtendedLogging = value;
         }
     }
 
@@ -68,39 +65,18 @@ public class QuikBridge
     
     #endregion
     
-    #region Constructors
-
-    public QuikBridge(IServiceProvider serviceProvider)
-    {
-        _serviceProvider = serviceProvider;
-        
-        _pHandler = new QuikBridgeProtocolHandler(serviceProvider.GetRequiredService<QuikBridgeEventDispatcher>());
-        
-        _messageRegistry = serviceProvider.GetRequiredService<MessageRegistry>();
-        
-        _msgIndexer = new MessageIndexer();
-    }
-    
-    #endregion
-    
     #region Methods
-    
-    public QuikBridgeEventAggregator GetGlobalEventAggregator()
-    {
-        return _serviceProvider.GetRequiredService<QuikBridgeEventAggregator>();
-    }
 
     public async Task StartAsync(string host, int port, CancellationToken cancellationToken)
     {
         if (ConnectionState != QuikBridgeConnectionState.Disconnected) return;
         
         ConnectionState = QuikBridgeConnectionState.Pending;
-        var isConnectionEstablished = await _pHandler.StartClientAsync(host, port, cancellationToken);
+        var isConnectionEstablished = await protocolHandler.StartClientAsync(host, port, cancellationToken);
         
         if (isConnectionEstablished)
         {
             ConnectionState = QuikBridgeConnectionState.Connected;
-            var eventAggregator = GetGlobalEventAggregator();
             eventAggregator.SubscribeToServiceMessages(async (resp, registeredReq) =>
             {
                 if (registeredReq == null) return;
@@ -115,7 +91,7 @@ public class QuikBridge
                             if (IsExtendedLogging)
                                 Log.Debug("DataSource with name {dsName} has been created; callback is set up", dsName);
                             await SetDsUpdateCallback(r, dsName);
-                            _ = GetGlobalEventAggregator().RaiseDataSourceSetEvent(dsName, registeredReq);
+                            _ = eventAggregator.RaiseDataSourceSetEvent(dsName, registeredReq);
                         }
                     }
                 } else if (registeredReq.MessageType == MessageType.OrderBookInit)
@@ -147,7 +123,7 @@ public class QuikBridge
     
     public void RegisterDataSourceCallback(DatasourceCallbackReceived callback)
     {
-        _pHandler.RegisterDataSourceCallback(callback);
+        protocolHandler.RegisterDataSourceCallback(callback);
     }
 
     private async Task<int> SendRequest(JsonCommandData data, MetaData metaData, bool preprocessArguments = true)
@@ -168,7 +144,7 @@ public class QuikBridge
             type = MessageType.Req.GetDescription(),
             data = reqData ?? data
         };
-        await _pHandler.SendReqAsync(msg, preprocessArguments);
+        await protocolHandler.SendReqAsync(msg, preprocessArguments);
         if (IsExtendedLogging)
             Log.Debug($"New message id: {msgId}");
         return msgId;
@@ -227,7 +203,7 @@ public class QuikBridge
         return await SendRequest(data, metaData, false);
     }
 
-    public async Task<int> SetDsUpdateCallback(object datasource, string dataSourceName)
+    private async Task<int> SetDsUpdateCallback(object datasource, string dataSourceName)
     {
         string jsonArguments = "{\"type\": \"callable\", \"function\": \"on_update\"}";
         string[] args = {jsonArguments};
@@ -470,7 +446,7 @@ public class QuikBridge
 
     private void RegisterRequest(int id, string methodName, MetaData data)
     {
-        if (_messageRegistry.TryGetMetadata(id, out var _)) return;
+        if (msgRegistry.TryGetMetadata(id, out var _)) return;
 
         var qMessage = new QMessage()
         {
@@ -507,7 +483,7 @@ public class QuikBridge
                 break;
         }
 
-        _messageRegistry.RegisterMessage(id, qMessage);
+        msgRegistry.RegisterMessage(id, qMessage);
     }
     
     private void OnConnectionStateChanged(QuikBridgeConnectionState newState)
@@ -517,11 +493,10 @@ public class QuikBridge
 
     public void Finish()
     {
-        _pHandler.Finish();
-        var eventAggregator = GetGlobalEventAggregator();
+        protocolHandler.Finish();
         eventAggregator.Close();
         Thread.Sleep(1000);
-        _pHandler.StopClient();
+        protocolHandler.StopClient();
         ConnectionState = QuikBridgeConnectionState.Disconnected;
     }
     

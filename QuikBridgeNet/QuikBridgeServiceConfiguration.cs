@@ -7,12 +7,8 @@ namespace QuikBridgeNet;
 
 public static class QuikBridgeServiceConfiguration
 {
-    private static IServiceProvider _serviceProvider;
-
-    public static void ConfigureServices()
+    public static void ConfigureServices(IServiceCollection serviceCollection)
     {
-        var serviceCollection = new ServiceCollection();
-
         serviceCollection.AddSingleton<QuikBridgeEventAggregator>();
         serviceCollection.AddSingleton<ILogger>(provider => new LoggerConfiguration()
             .WriteTo.Console()
@@ -23,9 +19,7 @@ public static class QuikBridgeServiceConfiguration
         serviceCollection.AddTransient<IDomainEventHandler<ReqArrivedEvent>, ReqArrivedEventHandler>();
         serviceCollection.AddTransient<IDomainEventHandler<SocketConnectionCloseEvent>, SocketConnectionCloseEventHandler>();
         serviceCollection.AddSingleton<QuikBridgeEventDispatcher>();
-
-        _serviceProvider = serviceCollection.BuildServiceProvider();
+        serviceCollection.AddSingleton<QuikBridgeProtocolHandler>();
+        serviceCollection.AddSingleton<QuikBridge>();
     }
-
-    public static IServiceProvider ServiceProvider => _serviceProvider;
 }
