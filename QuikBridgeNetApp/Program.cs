@@ -84,9 +84,11 @@ class Program
         
         await client.StartAsync(host, port, cts.Token);
 
-        var testClassCode = "TQBR";
+        //var testClassCode = "TQBR";
+        var testClassCode = "SPBFUT";
         
-        var testTicker = "SBER";
+        //var testTicker = "SBER";
+        var testTicker = "SiZ4";
 
         await client.GetClassesList();
         await client.GetClassSecurities(testClassCode);
