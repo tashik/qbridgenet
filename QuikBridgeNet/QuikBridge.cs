@@ -392,6 +392,7 @@ public class QuikBridge(
 
     public async Task<int> UnsubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
     {
+        var key = $"{classCode}:{secCode}:{paramName}";
         var data = new JsonCommandDataSubscribeParam()
         {
             method = "unsubscribeParamChanges",
@@ -405,7 +406,11 @@ public class QuikBridge(
             InstrumentClass = classCode,
             Ticker = secCode
         };
-        return await SendRequest(data, metaData);
+        var msgId = await SendRequest(data, metaData);
+        _paramSubscriptions.TryRemove(key, out var id);
+        if (IsExtendedLogging)
+            Log.Information("{Sec} {Param} is unsubscribed, msg id {Id}", secCode, paramName, id);
+        return msgId;
     }
 
     public async Task<int> SendTransaction(TransactionBase transaction)
