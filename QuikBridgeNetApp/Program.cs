@@ -94,7 +94,7 @@ class Program
         await client.GetClassSecurities(testClassCode);
         await client.GetSecurityInfo(testClassCode, testTicker);
 
-        await client.SubscribeToQuotesTableParams(testClassCode, testTicker, "LAST");
+        var subscriptionToken = await client.SubscribeToQuotesTableParams(testClassCode, testTicker, "LAST");
 
         await client.SubscribeToOrderBook( testClassCode, testTicker);
 
@@ -104,7 +104,7 @@ class Program
         
         Console.WriteLine("Press any key to stop...");
         Console.ReadKey();
-
+        await client.UnsubscribeToQuotesTableParams(testClassCode, testTicker, "LAST", subscriptionToken);
         client.Finish();
         await Log.CloseAndFlushAsync();
     }
