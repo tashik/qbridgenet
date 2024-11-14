@@ -296,9 +296,16 @@ public class QuikBridge(
         return await SendRequest(data, metaData, false);
     }
 
-    public async Task<int> SubscribeToOrderBook(string classCode, string secCode)
+    public async Task<Guid> SubscribeToOrderBook(string classCode, string secCode)
     {
-        return await InitOrderBook(classCode, secCode);
+        var key = $"{classCode}:{secCode}:orderbook";
+        var msgId = 0;
+        if (!_subscriptionManager.ContainsKey(key))
+        {
+            msgId = await InitOrderBook(classCode, secCode);
+        }
+        var subscriptionEntry = _subscriptionManager.Subscribe(key, msgId);
+        return subscriptionEntry.SubscriptionToken;
     }
 
     private async Task DoSubscribeToOrderBook(string classCode, string secCode)
@@ -318,21 +325,37 @@ public class QuikBridge(
         await SendRequest(data, metaData);
     }
 
-    public async Task<int> UnsubscribeToOrderBook(string classCode, string secCode)
+    public async Task<int> UnsubscribeToOrderBook(string classCode, string secCode, Guid subscriptionToken)
     {
-        var data = new JsonCommandDataSubscribeQuotes()
+        var key = $"{classCode}:{secCode}:orderbook";
+        var msgId = 0;
+
+        if (!_subscriptionManager.ContainsKey(key))
         {
-            method = "unsubscribeQuotes",
-            cl = classCode,
-            security = secCode
-        };
-        var metaData = new Subscription()
+            return msgId;
+        }
+        _subscriptionManager.Unsubscribe(key, subscriptionToken);
+
+        if (!_subscriptionManager.ContainsKey(key))
         {
-            MessageType = MessageType.UnsubscribeOrderbook,
-            InstrumentClass = classCode,
-            Ticker = secCode
-        };
-        return await SendRequest(data, metaData);
+            var data = new JsonCommandDataSubscribeQuotes()
+            {
+                method = "unsubscribeQuotes",
+                cl = classCode,
+                security = secCode
+            };
+            var metaData = new Subscription()
+            {
+                MessageType = MessageType.UnsubscribeOrderbook,
+                InstrumentClass = classCode,
+                Ticker = secCode
+            };
+            msgId = await SendRequest(data, metaData);
+        }
+        if (IsExtendedLogging)
+            Log.Information("{Sec} orderbook is unsubscribed", secCode);
+
+        return msgId;
     }
 
     public async Task<Guid> SubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
