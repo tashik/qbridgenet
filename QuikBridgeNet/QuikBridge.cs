@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Specialized;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using QuikBridgeNet.Entities;
@@ -19,6 +20,7 @@ public class QuikBridge(
     #region Fields
 
     private readonly MessageIndexer _msgIndexer = new();
+    private readonly QuikBridgeSubscriptionManager _subscriptionManager = new();
 
     private readonly Dictionary<string, object> _dataSources = new();
 
@@ -333,42 +335,31 @@ public class QuikBridge(
         return await SendRequest(data, metaData);
     }
 
-    public async Task<int> SubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
+    public async Task<Guid> SubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
     {
         var key = $"{classCode}:{secCode}:{paramName}";
-
-        if (!_paramSubscriptions.ContainsKey(key))
+        var msgId = 0;
+        if (!_subscriptionManager.ContainsKey(key))
         {
-            if (_paramSubscriptions.TryAdd(key, 0))
+            var data = new JsonCommandDataSubscribeParam()
             {
-                try
-                {
-                    var data = new JsonCommandDataSubscribeParam()
-                    {
-                        method = "subscribeParamChanges",
-                        cl = classCode,
-                        security = secCode,
-                        param = paramName
-                    };
-                    var metaData = new ParamSubscription()
-                    {
-                        MessageType = MessageType.SubscribeParam,
-                        InstrumentClass = classCode,
-                        Ticker = secCode,
-                        ParamName = paramName
-                    };
-                    var msgId = await SendRequest(data, metaData);
-                    _paramSubscriptions[key] = msgId;
-                    return msgId;
-                }
-                catch
-                {
-                    _paramSubscriptions.TryRemove(key, out _);
-                    throw;
-                }
-            }
+                method = "subscribeParamChanges",
+                cl = classCode,
+                security = secCode,
+                param = paramName
+            };
+            var metaData = new ParamSubscription()
+            {
+                MessageType = MessageType.SubscribeParam,
+                InstrumentClass = classCode,
+                Ticker = secCode,
+                ParamName = paramName
+            };
+            msgId = await SendRequest(data, metaData);
         }
-        return _paramSubscriptions[key];
+
+        var subscriptionEntry = _subscriptionManager.Subscribe(key, msgId);
+        return subscriptionEntry.SubscriptionToken;
     }
 
     public async Task<int> GetQuotesTableParam(string classCode, string secCode, string paramName)
@@ -390,26 +381,38 @@ public class QuikBridge(
         return await SendRequest(data, metaData, false);
     }
 
-    public async Task<int> UnsubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
+    public async Task<int> UnsubscribeToQuotesTableParams(string classCode, string secCode, string paramName, Guid subscriptionToken)
     {
         var key = $"{classCode}:{secCode}:{paramName}";
-        var data = new JsonCommandDataSubscribeParam()
+        var msgId = 0;
+
+        if (!_subscriptionManager.ContainsKey(key))
         {
-            method = "unsubscribeParamChanges",
-            cl = classCode,
-            security = secCode,
-            param = paramName
-        };
-        var metaData = new Subscription()
+            return 0;
+        }
+        _subscriptionManager.Unsubscribe(key, subscriptionToken);
+
+        if (!_subscriptionManager.ContainsKey(key))
         {
-            MessageType = MessageType.UnsubscribeParam,
-            InstrumentClass = classCode,
-            Ticker = secCode
-        };
-        var msgId = await SendRequest(data, metaData);
-        _paramSubscriptions.TryRemove(key, out var id);
+            var data = new JsonCommandDataSubscribeParam()
+            {
+                method = "unsubscribeParamChanges",
+                cl = classCode,
+                security = secCode,
+                param = paramName
+            };
+            var metaData = new Subscription()
+            {
+                MessageType = MessageType.UnsubscribeParam,
+                InstrumentClass = classCode,
+                Ticker = secCode
+            };
+            msgId = await SendRequest(data, metaData);
+        }
+
         if (IsExtendedLogging)
-            Log.Information("{Sec} {Param} is unsubscribed, msg id {Id}", secCode, paramName, id);
+                Log.Information("{Sec} {Param} is unsubscribed", secCode, paramName);
+        
         return msgId;
     }
 
