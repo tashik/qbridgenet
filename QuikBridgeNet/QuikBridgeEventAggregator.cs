@@ -10,6 +10,7 @@ public delegate Task OrderBookUpdateHandler(OrderBookUpdateEventArgs args);
 public delegate Task ServiceMessageHandler(JsonMessage resp, QMessage? registeredMsg);
 public delegate Task DataSourceSetHandler(string dataSourceName, QMessage? dataSourceReq);
 public delegate Task NewAllTradeHandler(AllTrade trade);
+public delegate Task ParamUpdateCallbackHandler(ParamCallback callback);
 public delegate Task SecurityInfoHandler(SecurityContract contract);
 
 public class QuikBridgeEventAggregator
@@ -17,6 +18,7 @@ public class QuikBridgeEventAggregator
     // Channels
     private readonly Channel<(List<string> data, QuikDataType dataType)> _instrumentClassesUpdateChannel = Channel.CreateUnbounded<(List<string>, QuikDataType)>();
     private readonly Channel<AllTrade> _allTradesChannel = Channel.CreateUnbounded<AllTrade>();
+    private readonly Channel<ParamCallback> _paramUpdateCallbackChannel = Channel.CreateUnbounded<ParamCallback>();
     private readonly Channel<SecurityContract> _contractsChannel = Channel.CreateUnbounded<SecurityContract>();
     private readonly Channel<InstrumentParametersUpdateEventArgs> _instrumentParameterUpdateChannel = Channel.CreateUnbounded<InstrumentParametersUpdateEventArgs>();
     private readonly Channel<OrderBookUpdateEventArgs> _orderBookUpdateChannel = Channel.CreateUnbounded<OrderBookUpdateEventArgs>();
@@ -30,6 +32,7 @@ public class QuikBridgeEventAggregator
     private readonly ConcurrentBag<ServiceMessageHandler> _serviceMessageHandlers = new();
     private readonly ConcurrentBag<DataSourceSetHandler> _dataSourceSetHandlers = new();
     private readonly ConcurrentBag<NewAllTradeHandler> _allTradeHandlers = new();
+    private readonly ConcurrentBag<ParamUpdateCallbackHandler> _paramUpdateCallbackHandlers = new();
     private readonly ConcurrentBag<SecurityInfoHandler> _securityInfoHandlers = new();
 
     // Raise events
@@ -41,6 +44,11 @@ public class QuikBridgeEventAggregator
     public async Task RaiseDataSourceSetEvent(string dataSourceName, QMessage? dataSourceReq)
     {
         await _dataSourceSetChannel.Writer.WriteAsync((dataSourceName, dataSourceReq));
+    }
+
+    public async Task RaiseParameterUpdateCallbackEvent(ParamCallback callback)
+    {
+        await _paramUpdateCallbackChannel.Writer.WriteAsync(callback);
     }
     
     public async Task RaiseNewAllTradeEvent(AllTrade trade)
@@ -121,6 +129,22 @@ public class QuikBridgeEventAggregator
     {
         _securityInfoHandlers.Add(handler);
         _ = ProcessSecurityInfo();
+    }
+
+    public void SubscribeToParamUpdateCallback(ParamUpdateCallbackHandler handler)
+    {
+        _paramUpdateCallbackHandlers.Add(handler);
+        _ = ProcessParamUpdateCallback();
+    }
+
+    private async Task ProcessParamUpdateCallback()
+    {
+        await foreach (var callback in _paramUpdateCallbackChannel.Reader.ReadAllAsync())
+        {
+            var handlers = _paramUpdateCallbackHandlers.ToArray();
+            var tasks = handlers.Select(handler => handler(callback)).ToList();
+            await Task.WhenAll(tasks);
+        }
     }
 
     // Internal processing methods

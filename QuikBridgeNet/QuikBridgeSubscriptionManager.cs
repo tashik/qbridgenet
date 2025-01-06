@@ -71,4 +71,14 @@ internal class QuikBridgeSubscriptionManager
         _messageIds.TryGetValue(key, out var existingMessageId);
         return existingMessageId != 0;
     }
+
+    public List<string> GetSubscriptionParamsForInstrument(string classCode, string secCode)
+    {
+        var prefix =$"{classCode}:{secCode}";
+        var matchingEntries = _subscriptions
+            .Where(kvp => kvp.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+
+        return matchingEntries.Select(entry => entry.Key.Split(':')[2]).ToList();
+    }
 }

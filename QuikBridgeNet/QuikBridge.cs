@@ -5,6 +5,7 @@ using Newtonsoft.Json;
 using QuikBridgeNet.Entities;
 using QuikBridgeNet.Entities.CommandData;
 using QuikBridgeNet.Entities.MessageMeta;
+using QuikBridgeNet.Events;
 using QuikBridgeNet.Helpers;
 using Serilog;
 
@@ -27,8 +28,6 @@ public class QuikBridge(
     private QuikBridgeConnectionState _connectionState = QuikBridgeConnectionState.Disconnected;
 
     private bool _isExtendedLogging = true;
-    
-    private readonly ConcurrentDictionary<string, int> _paramSubscriptions = new();
     
     #endregion
     
@@ -106,6 +105,18 @@ public class QuikBridge(
                     }
                 }
             });
+            eventAggregator.SubscribeToParamUpdateCallback(async (resp) =>
+            {
+                var subscriptions = _subscriptionManager.GetSubscriptionParamsForInstrument(resp.ClassCode, resp.SecCode);
+                if (subscriptions.Count > 0)
+                {
+                    foreach (var paramName in subscriptions)
+                    {
+                        await GetQuotesTableParam(resp.ClassCode, resp.SecCode, paramName);
+                    }
+                }
+                
+            });
             await SetupCallbacks();
         }
         else
@@ -116,7 +127,7 @@ public class QuikBridge(
 
     private async Task SetupCallbacks()
     {
-        MessageType[] callbacks = { MessageType.OnTrade, MessageType.OnTransReply, MessageType.OnOrder};
+        MessageType[] callbacks = { MessageType.OnTrade, MessageType.OnTransReply, MessageType.OnOrder, MessageType.OnParam};
         foreach (var cb in callbacks)
         {
             await SetGlobalCallback(cb);
@@ -366,7 +377,7 @@ public class QuikBridge(
         {
             var data = new JsonCommandDataSubscribeParam()
             {
-                method = "subscribeParamChanges",
+                method = "ParamRequest",
                 cl = classCode,
                 security = secCode,
                 param = paramName
@@ -379,6 +390,7 @@ public class QuikBridge(
                 ParamName = paramName
             };
             msgId = await SendRequest(data, metaData);
+            Log.Debug("Send subscription request for key " + key + " with msgId " + msgId);
         }
 
         var subscriptionEntry = _subscriptionManager.Subscribe(key, msgId);

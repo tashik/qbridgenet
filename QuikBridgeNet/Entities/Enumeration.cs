@@ -52,6 +52,8 @@ public enum MessageType
     OnTransReply,
     [Description("OnAllTrade")]
     OnAllTrade,
+    [Description("OnParam")]
+    OnParam,
     [Description("getParamEx2")]
     GetParam,
     

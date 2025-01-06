@@ -54,6 +54,28 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
                     var funcName = funcNameToken.ToString();
                     switch (funcName)
                     {
+                        case "OnParam":
+                            var paramResultToken = domainEvent.Req.body?["arguments"] ?? null;
+                            if (paramResultToken is JArray jParamArray)
+                            {
+                                classCode = jParamArray[0].ToString();
+                                secCode = jParamArray[1].ToString();
+                                if (classCode != null && secCode != null)
+                                {
+                                    _ = _eventAggregator.RaiseParameterUpdateCallbackEvent(new ParamCallback()
+                                    {
+                                        ClassCode = classCode,
+                                        SecCode = secCode
+                                    });
+                                }
+                                else
+                                {
+                                    Log.Debug("Callback is not parsed");
+                                }
+                            }
+
+                            
+                            break;
                         case "OnAllTrade":
                             var resultToken = domainEvent.Req.body?["arguments"] ?? null;
                             if (resultToken is JArray jArray)
