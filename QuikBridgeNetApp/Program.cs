@@ -88,17 +88,17 @@ class Program
         var testClassCode = "SPBFUT";
         
         //var testTicker = "SBER";
-        var testTicker = "SiZ4";
+        var testTicker = "SiH5";
 
-        await client.GetClassesList();
-        await client.GetClassSecurities(testClassCode);
-        await client.GetSecurityInfo(testClassCode, testTicker);
-
+        //await client.GetClassesList();
+        //await client.GetClassSecurities(testClassCode);
+        //await client.GetSecurityInfo(testClassCode, testTicker);
+        Thread.Sleep(5000);
         var subscriptionToken = await client.SubscribeToQuotesTableParams(testClassCode, testTicker, "LAST");
 
-        await client.SubscribeToOrderBook( testClassCode, testTicker);
-
-        await client.CreateDs(testClassCode, testTicker, "5");
+        //await client.SubscribeToOrderBook( testClassCode, testTicker);
+ 
+        //await client.CreateDs(testClassCode, testTicker, "5");
 
         //await client.SetGlobalCallback(MessageType.OnAllTrade);
         
