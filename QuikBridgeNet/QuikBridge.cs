@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using System.Collections.Specialized;
-using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using QuikBridgeNet.Entities;
 using QuikBridgeNet.Entities.CommandData;
@@ -96,7 +94,7 @@ public class QuikBridge(
                             _ = eventAggregator.RaiseDataSourceSetEvent(dsName, registeredReq);
                         }
                     }
-                } else if (registeredReq.MessageType == MessageType.OrderBookInit)
+                }/* else if (registeredReq.MessageType == MessageType.OrderBookInit)
                 {
                     var result = resp.body?["result"]?.ToObject<List<bool>>();
                     if (result is { Count: > 0 } && result[0])
@@ -104,7 +102,7 @@ public class QuikBridge(
                         await GetOrderBookSnapshot(registeredReq.ClassCode, registeredReq.Ticker);
                         await DoSubscribeToOrderBook(registeredReq.ClassCode, registeredReq.Ticker);
                     }
-                }
+                }*/
             });
             await SetupCallbacks();
         }
@@ -302,13 +300,14 @@ public class QuikBridge(
         var msgId = 0;
         if (!_subscriptionManager.ContainsKey(key))
         {
-            msgId = await InitOrderBook(classCode, secCode);
+            // msgId = await InitOrderBook(classCode, secCode);
+            msgId = await DoSubscribeToOrderBook(classCode, secCode);
         }
         var subscriptionEntry = _subscriptionManager.Subscribe(key, msgId);
         return subscriptionEntry.SubscriptionToken;
     }
 
-    private async Task DoSubscribeToOrderBook(string classCode, string secCode)
+    private async Task<int> DoSubscribeToOrderBook(string classCode, string secCode)
     {
         var data = new JsonCommandDataSubscribeQuotes()
         {
@@ -322,7 +321,7 @@ public class QuikBridge(
             InstrumentClass = classCode,
             Ticker = secCode
         };
-        await SendRequest(data, metaData);
+        return await SendRequest(data, metaData);
     }
 
     public async Task<int> UnsubscribeToOrderBook(string classCode, string secCode, Guid subscriptionToken)
