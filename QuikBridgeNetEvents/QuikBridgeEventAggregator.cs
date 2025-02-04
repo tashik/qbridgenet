@@ -98,6 +98,7 @@ public class QuikBridgeEventAggregator
         {
             Console.WriteLine($"[{typeof(TEvent)}] Raising event...");
             await channel.Writer.WriteAsync(eventArgs);
+            EnsureProcessingIsRunning<TEvent>();
         }
         else
         {
@@ -149,7 +150,18 @@ public class QuikBridgeEventAggregator
                     Console.WriteLine($"[{typeof(TEvent)}] Event received: {args}");
 
                     var handlers = subscribers.ToArray();
-                    var tasks = handlers.Select(handler => ((Func<TEvent, Task>)handler).Invoke(args)).ToList();
+                    //var tasks = handlers.Select(handler => ((Func<TEvent, Task>)handler).Invoke(args)).ToList();
+                    var tasks = handlers.Select(async handler =>
+                    {
+                        try
+                        {
+                            await ((Func<TEvent, Task>)handler)(args);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[Error] Handler for {typeof(TEvent)} failed: {ex}");
+                        }
+                    }).ToList();
                     await Task.WhenAll(tasks);
                 }
             }

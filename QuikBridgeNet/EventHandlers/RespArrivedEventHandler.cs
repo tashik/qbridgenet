@@ -21,11 +21,11 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
     public Task HandleAsync(RespArrivedEvent domainEvent)
     {
         var msg = domainEvent.Req;
-        Log.Debug("resp arrived with message id {0}", msg.id);
+        //Log.Debug("resp arrived with message id {0}", msg.id);
         
         if (!_messageRegistry.TryGetMetadata(msg.id, out var newMessage)) return Task.CompletedTask;
         if (newMessage == null) return Task.CompletedTask;
-        Log.Debug("resp method is {0}", newMessage.Method);
+        //Log.Debug("resp method is {0}", newMessage.Method);
         
         
         switch (newMessage.MessageType)

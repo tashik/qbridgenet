@@ -22,7 +22,7 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
     public Task HandleAsync(ReqArrivedEvent domainEvent)
     {
         var msgId = domainEvent.Req.id;
-        Log.Debug("msg arrived with message id " + msgId);
+        //Log.Debug("msg arrived with message id " + msgId);
 
         _messageRegistry.TryGetMetadata(msgId, out var qMessage);
 
