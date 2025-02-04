@@ -4,7 +4,9 @@ using Newtonsoft.Json;
 using QuikBridgeNet.Entities;
 using QuikBridgeNet.Entities.CommandData;
 using QuikBridgeNet.Entities.MessageMeta;
+using QuikBridgeNet.Entities.ProtocolData;
 using QuikBridgeNet.Helpers;
+using QuikBridgeNetDomain.Entities;
 using Serilog;
 
 namespace QuikBridgeNet;

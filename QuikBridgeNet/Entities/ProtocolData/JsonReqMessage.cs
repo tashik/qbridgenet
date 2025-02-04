@@ -1,6 +1,6 @@
 using QuikBridgeNet.Entities.CommandData;
 
-namespace QuikBridgeNet.Entities;
+namespace QuikBridgeNet.Entities.ProtocolData;
 
 public class JsonReqMessage
 {

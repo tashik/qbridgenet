@@ -1,15 +1,16 @@
-namespace QuikBridgeNet.Entities;
+namespace QuikBridgeNetDomain.Entities;
 
-public class Bid
+public class Quotation
 {
     public string price { get; set; }
     public string quantity { get; set; }
 }
-
-public class Offer
+public class Bid : Quotation
 {
-    public string price { get; set; } = "0";
-    public string quantity { get; set; } = "0";
+}
+
+public class Offer : Quotation
+{
 }
 
 public class OrderBook

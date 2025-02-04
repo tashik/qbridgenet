@@ -1,4 +1,4 @@
-namespace QuikBridgeNet.Entities;
+namespace QuikBridgeNet.Entities.ProtocolData;
 
 public class JsonCommandRequest
 {

@@ -10,6 +10,7 @@ public static class QuikBridgeServiceConfiguration
     public static void ConfigureServices(IServiceCollection serviceCollection)
     {
         serviceCollection.AddSingleton<QuikBridgeEventAggregator>();
+        serviceCollection.AddSingleton<QuikBridgeNetEvents.QuikBridgeEventAggregator>();
         serviceCollection.AddSingleton<ILogger>(provider => new LoggerConfiguration()
             .WriteTo.Console()
             .CreateLogger());
