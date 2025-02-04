@@ -1,6 +1,6 @@
 using System.ComponentModel;
 
-namespace QuikBridgeNet.Entities;
+namespace QuikBridgeNetDomain.Entities;
 
 public enum MessageType
 {

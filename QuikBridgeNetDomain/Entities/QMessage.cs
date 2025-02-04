@@ -1,4 +1,4 @@
-namespace QuikBridgeNet.Entities;
+namespace QuikBridgeNetDomain.Entities;
 
 public class QMessage
 {

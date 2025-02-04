@@ -1,9 +1,8 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using QuikBridgeNet;
-using QuikBridgeNet.Entities;
 using QuikBridgeNet.Helpers;
+using QuikBridgeNetDomain.Entities;
 using Serilog;
-using Serilog.Events;
 
 class Program
 {
@@ -19,7 +18,7 @@ class Program
 
         // Resolve the client
         var client = serviceProvider.GetRequiredService<QuikBridge>();
-        client.IsExtendedLogging = true;
+        client.IsExtendedLogging = false;
         client.ConnectionStateChanged += OnBridgeConnectionStateChanged;
         var dataSource = "";
         
@@ -36,24 +35,34 @@ class Program
             .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
         
-        var globalEventAggregator = serviceProvider.GetRequiredService<QuikBridgeEventAggregator>();
+        var globalEventAggregator = serviceProvider.GetRequiredService<QuikBridgeNetEvents.QuikBridgeEventAggregator>();
         
         // Subscribe to the global events
-        globalEventAggregator.SubscribeToInstrumentClassesUpdate( (instrumentClasses, dataType) =>
+        globalEventAggregator.SubscribeToInstrumentClassesUpdate( (eventObj) =>
         {
-            Log.Information("{DataType} arrived: {NumClasses}", dataType.GetDescription(), instrumentClasses.Count);
+            Log.Information("{DataType} arrived: {NumClasses}", eventObj.InstrumentClassType.GetDescription(), eventObj.InstrumentClasses.Count);
             return Task.CompletedTask;
         });
         
-        globalEventAggregator.SubscribeToAllTrades( trade =>
+        globalEventAggregator.SubscribeToAllTrades( eventObj =>
         {
-            Log.Information("Trade arrived: {Security} {Qty} x {Price}", trade.sec_code, trade.qty, trade.price);
+            if (eventObj.Trade != null)
+            {
+                Log.Information("Trade arrived: {Security} {Qty} x {Price}", eventObj.Trade.sec_code,
+                    eventObj.Trade.qty, eventObj.Trade.price);
+            }
+
             return Task.CompletedTask;
         });
         
-        globalEventAggregator.SubscribeToSecurityInfo( contract =>
+        globalEventAggregator.SubscribeToSecurityInfo( eventObj =>
         {
-            Log.Information("Security contract arrived: {Security} {ClassCode} with lot size {LotSize}", contract.code, contract.class_code, contract.lot_size);
+            if (eventObj.Contract != null)
+            {
+                Log.Information("Security contract arrived: {Security} {ClassCode} with lot size {LotSize}",
+                    eventObj.Contract.code, eventObj.Contract.class_code, eventObj.Contract.lot_size);
+            }
+
             return Task.CompletedTask;
         });
         
@@ -69,17 +78,22 @@ class Program
             return Task.CompletedTask;
         });
         
-        globalEventAggregator.SubscribeToServiceMessages( (resp, registeredReq) =>
+        globalEventAggregator.SubscribeToServiceMessages( eventObj =>
         {
-            Log.Information("Arrived message with type {MsgType}", registeredReq?.MessageType.GetDescription());
+            Log.Information("Arrived message with type {MsgType}", eventObj.BridgeMessage?.MessageType.GetDescription());
             return Task.CompletedTask;
         });
         
-        globalEventAggregator.SubscribeToDataSourceSet( async (dataSourceName, dataSourceReq) =>
+        globalEventAggregator.SubscribeToDataSourceSet( async eventObj =>
         {
-            Log.Information("Datasource is set for instrument {Ticker} with time frame {Interval}", dataSourceReq?.Ticker, dataSourceReq?.Interval);
-            dataSource = dataSourceName;
-            await client.GetBar(dataSourceName, MessageType.Close, 1);
+            if (eventObj.BridgeMessage != null)
+            {
+                Log.Information("Datasource is set for instrument {Ticker} with time frame {Interval}",
+                    eventObj.BridgeMessage.Ticker, eventObj.BridgeMessage.Interval);
+            }
+
+            dataSource = eventObj.DataSourceName;
+            await client.GetBar(eventObj.DataSourceName, MessageType.Close, 1);
         });
         
         await client.StartAsync(host, port, cts.Token);
@@ -95,9 +109,9 @@ class Program
         //await client.GetSecurityInfo(testClassCode, testTicker);
         Thread.Sleep(5000);
         var subscriptionToken = await client.SubscribeToQuotesTableParams(testClassCode, testTicker, "LAST");
-
+            
         //await client.SubscribeToOrderBook( testClassCode, testTicker);
- 
+        
         //await client.CreateDs(testClassCode, testTicker, "5");
 
         //await client.SetGlobalCallback(MessageType.OnAllTrade);

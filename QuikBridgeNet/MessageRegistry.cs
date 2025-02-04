@@ -1,4 +1,5 @@
 using QuikBridgeNet.Entities;
+using QuikBridgeNetDomain.Entities;
 
 namespace QuikBridgeNet;
 

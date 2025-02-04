@@ -1,6 +1,6 @@
 using Newtonsoft.Json.Linq;
 
-namespace QuikBridgeNet.Entities;
+namespace QuikBridgeNetDomain.Entities;
 
 public class JsonMessage
 {

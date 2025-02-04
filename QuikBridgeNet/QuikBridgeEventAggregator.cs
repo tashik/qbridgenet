@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
-using QuikBridgeNet.Entities;
+using QuikBridgeNetDomain.Entities;
 
 namespace QuikBridgeNet;
 
