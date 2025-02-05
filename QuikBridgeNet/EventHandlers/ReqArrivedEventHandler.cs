@@ -1,30 +1,24 @@
 using Newtonsoft.Json.Linq;
-using QuikBridgeNet.Entities;
 using QuikBridgeNet.Events;
+using QuikBridgeNetDomain;
 using QuikBridgeNetDomain.Entities;
+using QuikBridgeNetEvents;
 using QuikBridgeNetEvents.Events;
 using Serilog;
 
 namespace QuikBridgeNet.EventHandlers;
 
-public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
+public class ReqArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeEventAggregator globalEventAggregator, QuikBridgeConfig bridgeConfig)
+    : IDomainEventHandler<ReqArrivedEvent>
 {
-    private readonly MessageRegistry _messageRegistry;
-    private readonly QuikBridgeEventAggregator _eventAggregator;
-    private readonly QuikBridgeNetEvents.QuikBridgeEventAggregator _newEventAggregator;
+    private readonly bool _isExtendedLogging = bridgeConfig.UseExtendedLogging;
     
-    public ReqArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeEventAggregator globalEventAggregator, QuikBridgeNetEvents.QuikBridgeEventAggregator newEventAggregator)
-    {
-        _messageRegistry = messageRegistry;
-        _eventAggregator = globalEventAggregator;
-        _newEventAggregator = newEventAggregator;
-    }
     public Task HandleAsync(ReqArrivedEvent domainEvent)
     {
         var msgId = domainEvent.Req.id;
-        //Log.Debug("msg arrived with message id " + msgId);
+        if (_isExtendedLogging) Log.Debug("msg arrived with message id " + msgId);
 
-        _messageRegistry.TryGetMetadata(msgId, out var qMessage);
+        messageRegistry.TryGetMetadata(msgId, out var qMessage);
 
         var methodToken = domainEvent.Req.body?["function"] ?? domainEvent.Req.body?["method"];
         var method = methodToken?.ToString();
@@ -39,9 +33,7 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
                 var valueToken = domainEvent.Req.body?["value"];
                 var value = valueToken?.ToString();
                 
-
-                _ = _eventAggregator.RaiseInstrumentParameterUpdateEvent(secCode, classCode, paramName, value);
-                _ = _newEventAggregator.RaiseEvent(new InstrumentParametersUpdateEvent() {
+                _ = globalEventAggregator.RaiseEvent(new InstrumentParametersUpdateEvent() {
                     SecCode = secCode, ClassCode = classCode, ParamName = paramName, ParamValue = value});
                 break;
             case "quotesChange":
@@ -49,8 +41,7 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
                 var orderBook = quotesToken?.ToObject<OrderBook>();
                 if (orderBook != null)
                 {
-                    _ = _eventAggregator.RaiseOrderBookUpdateEvent(secCode, classCode, orderBook);
-                    _ = _newEventAggregator.RaiseEvent(new OrderBookUpdateEvent() {
+                    _ = globalEventAggregator.RaiseEvent(new OrderBookUpdateEvent() {
                         SecCode = secCode,ClassCode = classCode, OrderBook = orderBook
                     });
                 }
@@ -80,8 +71,7 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
                                 {
                                     foreach (var t in trades)
                                     {
-                                        _ = _eventAggregator.RaiseNewAllTradeEvent(t);
-                                        _ = _newEventAggregator.RaiseEvent(new AllTradeArrivedEvent() { Trade = t});
+                                        _ = globalEventAggregator.RaiseEvent(new AllTradeArrivedEvent() { Trade = t});
                                     }
                                 }
                             }
@@ -91,8 +81,7 @@ public class ReqArrivedEventHandler: IDomainEventHandler<ReqArrivedEvent>
                 }
                 break;
             default:
-                _ = _eventAggregator.RaiseServiceMessageArrivedEvent(domainEvent.Req, qMessage);
-                _ = _newEventAggregator.RaiseEvent(new ServiceMessageArrivedEvent() {Response = domainEvent.Req, BridgeMessage = qMessage});
+                _ = globalEventAggregator.RaiseEvent(new ServiceMessageArrivedEvent() {Response = domainEvent.Req, BridgeMessage = qMessage});
                 break;
                 /*
             elif data["method"] == "callback" and "OnOrder" == data["name"]:

@@ -7,7 +7,7 @@ public class SocketConnectionCloseEventHandler: IDomainEventHandler<SocketConnec
 {
     public Task HandleAsync(SocketConnectionCloseEvent domainEvent)
     {
-        Log.Debug("close connection msg arrived");
+        Log.Debug("Close connection confirmed by Quik");
         return Task.CompletedTask;
     }
 }

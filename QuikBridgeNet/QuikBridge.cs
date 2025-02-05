@@ -1,11 +1,13 @@
 using System.Collections.Concurrent;
 using Newtonsoft.Json;
-using QuikBridgeNet.Entities;
 using QuikBridgeNet.Entities.CommandData;
 using QuikBridgeNet.Entities.MessageMeta;
 using QuikBridgeNet.Entities.ProtocolData;
 using QuikBridgeNet.Helpers;
+using QuikBridgeNetDomain;
 using QuikBridgeNetDomain.Entities;
+using QuikBridgeNetEvents;
+using QuikBridgeNetEvents.Events;
 using Serilog;
 
 namespace QuikBridgeNet;
@@ -15,7 +17,8 @@ public delegate void DatasourceCallbackReceived(JsonMessage jMsg);
 public class QuikBridge(
     QuikBridgeProtocolHandler protocolHandler,
     MessageRegistry msgRegistry,
-    QuikBridgeEventAggregator eventAggregator)
+    QuikBridgeEventAggregator eventAggregator,
+    QuikBridgeConfig bridgeConfig)
 {
     #region Fields
 
@@ -26,7 +29,7 @@ public class QuikBridge(
 
     private QuikBridgeConnectionState _connectionState = QuikBridgeConnectionState.Disconnected;
 
-    private bool _isExtendedLogging = true;
+    private bool _isExtendedLogging = bridgeConfig.UseExtendedLogging;
     
     private readonly ConcurrentDictionary<string, int> _paramSubscriptions = new();
     
@@ -69,21 +72,22 @@ public class QuikBridge(
     
     #region Methods
 
-    public async Task StartAsync(string host, int port, CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (ConnectionState != QuikBridgeConnectionState.Disconnected) return;
         
         ConnectionState = QuikBridgeConnectionState.Pending;
-        var isConnectionEstablished = await protocolHandler.StartClientAsync(host, port, cancellationToken);
+        var isConnectionEstablished = await protocolHandler.StartClientAsync(bridgeConfig.Host, bridgeConfig.Port, cancellationToken);
         
         if (isConnectionEstablished)
         {
             ConnectionState = QuikBridgeConnectionState.Connected;
-            eventAggregator.SubscribeToServiceMessages(async (resp, registeredReq) =>
+            eventAggregator.SubscribeToServiceMessages(async (resp) =>
             {
+                var registeredReq = resp.BridgeMessage;
                 if (registeredReq == null) return;
                 if (registeredReq.MessageType == MessageType.Datasource) {
-                    var result = resp.body?["result"]?.ToObject<List<int>>();
+                    var result = resp.Response?.body?["result"]?.ToObject<List<int>>();
                     if (result != null)
                     {
                         foreach (var r in result)
@@ -93,7 +97,7 @@ public class QuikBridge(
                             if (IsExtendedLogging)
                                 Log.Debug("DataSource with name {dsName} has been created; callback is set up", dsName);
                             await SetDsUpdateCallback(r, dsName);
-                            _ = eventAggregator.RaiseDataSourceSetEvent(dsName, registeredReq);
+                            _ = eventAggregator.RaiseEvent(new DataSourceSetEvent() {DataSourceName = dsName, BridgeMessage = registeredReq});
                         }
                     }
                 }/* else if (registeredReq.MessageType == MessageType.OrderBookInit)

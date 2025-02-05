@@ -1,31 +1,30 @@
 using Newtonsoft.Json.Linq;
 using QuikBridgeNet.Events;
+using QuikBridgeNetDomain;
 using QuikBridgeNetDomain.Entities;
+using QuikBridgeNetEvents;
 using QuikBridgeNetEvents.Events;
 using Serilog;
 
 namespace QuikBridgeNet.EventHandlers;
 
-public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
+public class RespArrivedEventHandler(
+    MessageRegistry messageRegistry,
+    QuikBridgeEventAggregator globalEventAggregator,
+    QuikBridgeConfig bridgeConfig)
+    : IDomainEventHandler<RespArrivedEvent>
 {
-    private readonly MessageRegistry _messageRegistry;
-    private readonly QuikBridgeEventAggregator _eventAggregator;
-    private readonly QuikBridgeNetEvents.QuikBridgeEventAggregator _newEventAggregator;
-    
-    public RespArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeEventAggregator globalEventAggregator, QuikBridgeNetEvents.QuikBridgeEventAggregator newEventAggregator)
-    {
-        _messageRegistry = messageRegistry;
-        _eventAggregator = globalEventAggregator;
-        _newEventAggregator = newEventAggregator;
-    }
+    private readonly bool _isExtendedLogging = bridgeConfig.UseExtendedLogging;
+
     public Task HandleAsync(RespArrivedEvent domainEvent)
     {
         var msg = domainEvent.Req;
-        //Log.Debug("resp arrived with message id {0}", msg.id);
+        if (_isExtendedLogging)
+            Log.Debug("resp arrived with message id {0}", msg.id);
         
-        if (!_messageRegistry.TryGetMetadata(msg.id, out var newMessage)) return Task.CompletedTask;
+        if (!messageRegistry.TryGetMetadata(msg.id, out var newMessage)) return Task.CompletedTask;
         if (newMessage == null) return Task.CompletedTask;
-        //Log.Debug("resp method is {0}", newMessage.Method);
+        if (_isExtendedLogging) Log.Debug("resp method is {0}", newMessage.Method);
         
         
         switch (newMessage.MessageType)
@@ -41,8 +40,7 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
                         classes.AddRange(cl);
                     }
                 }
-                _ = _eventAggregator.RaiseInstrumentClassesUpdateEvent(classes, QuikDataType.ClassCode);
-                _ = _newEventAggregator.RaiseEvent(new InstrumentClassesUpdateEvent() {InstrumentClasses = classes, InstrumentClassType = QuikDataType.ClassCode});
+                _ = globalEventAggregator.RaiseEvent(new InstrumentClassesUpdateEvent() {InstrumentClasses = classes, InstrumentClassType = QuikDataType.ClassCode});
                 break;
             case MessageType.Securities:
                 List<string> tickers = new();
@@ -55,8 +53,7 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
                         tickers.AddRange(cl);
                     }
                 }
-                _ = _eventAggregator.RaiseInstrumentClassesUpdateEvent(tickers, QuikDataType.SecCode);
-                _ = _newEventAggregator.RaiseEvent(new InstrumentClassesUpdateEvent()
+                _ = globalEventAggregator.RaiseEvent(new InstrumentClassesUpdateEvent()
                 {
                     InstrumentClasses = tickers,
                     InstrumentClassType = QuikDataType.SecCode
@@ -79,8 +76,7 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
                     {
                         foreach (var t in contracts)
                         {
-                            _ = _eventAggregator.RaiseSecurityInfoEvent(t);
-                            _ = _newEventAggregator.RaiseEvent(new SecurityContractArrivedEvent() { Contract = t});
+                            _ = globalEventAggregator.RaiseEvent(new SecurityContractArrivedEvent() { Contract = t});
                         }
                     }
                 }
@@ -98,9 +94,8 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
                 {
                     var valueToken = jArray[0]["param_value"];
                     var value = valueToken?.ToString();
-
-                    _ = _eventAggregator.RaiseInstrumentParameterUpdateEvent(newMessage.Ticker, newMessage.ClassCode, newMessage.ParamName, value);
-                    _ = _newEventAggregator.RaiseEvent(new InstrumentParametersUpdateEvent()
+                    
+                    _ = globalEventAggregator.RaiseEvent(new InstrumentParametersUpdateEvent()
                     {
                         SecCode = newMessage.Ticker, ClassCode = newMessage.ClassCode, ParamName = newMessage.ParamName, ParamValue = value
                     });
@@ -115,16 +110,14 @@ public class RespArrivedEventHandler : IDomainEventHandler<RespArrivedEvent>
                     var orderBook = orderBookToken.ToObject<OrderBook>();
                     if (orderBook != null)
                     {
-                        _ = _eventAggregator.RaiseOrderBookUpdateEvent(newMessage.Ticker, newMessage.ClassCode, orderBook);
-                        _ = _newEventAggregator.RaiseEvent(new OrderBookUpdateEvent() {
+                        _ = globalEventAggregator.RaiseEvent(new OrderBookUpdateEvent() {
                             SecCode = newMessage.Ticker,ClassCode = newMessage.ClassCode, OrderBook = orderBook
                         });
                     }
                 }
                 break;
             default:
-                _ = _eventAggregator.RaiseServiceMessageArrivedEvent(msg, newMessage);
-                _ = _newEventAggregator.RaiseEvent(new ServiceMessageArrivedEvent() {Response = msg, BridgeMessage = newMessage});
+                _ = globalEventAggregator.RaiseEvent(new ServiceMessageArrivedEvent() {Response = msg, BridgeMessage = newMessage});
                 break;
         }
         

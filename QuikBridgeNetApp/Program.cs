@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using QuikBridgeNet;
 using QuikBridgeNet.Helpers;
 using QuikBridgeNetDomain.Entities;
@@ -8,11 +9,14 @@ class Program
 {
     static async Task Main(string[] args)
     {
-        string host = "127.0.0.1";
-        int port = 57777;
+        
+        var builder = new ConfigurationBuilder()
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddJsonFile("appsettings.json", false, true);
+        var configuration = builder.Build();
 
         var serviceCollection = new ServiceCollection();
-        QuikBridgeServiceConfiguration.ConfigureServices(serviceCollection);
+        QuikBridgeServiceConfiguration.ConfigureServices(serviceCollection, configuration);
         
         var serviceProvider = serviceCollection.BuildServiceProvider();
 
@@ -96,7 +100,7 @@ class Program
             await client.GetBar(eventObj.DataSourceName, MessageType.Close, 1);
         });
         
-        await client.StartAsync(host, port, cts.Token);
+        await client.StartAsync(cts.Token);
 
         //var testClassCode = "TQBR";
         var testClassCode = "SPBFUT";

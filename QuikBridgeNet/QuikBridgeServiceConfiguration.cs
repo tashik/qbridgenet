@@ -1,15 +1,25 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using QuikBridgeNet.EventHandlers;
 using QuikBridgeNet.Events;
+using QuikBridgeNetDomain;
 using Serilog;
 
 namespace QuikBridgeNet;
 
 public static class QuikBridgeServiceConfiguration
 {
-    public static void ConfigureServices(IServiceCollection serviceCollection)
+    public static void ConfigureServices(IServiceCollection serviceCollection, IConfiguration? configuration)
     {
-        serviceCollection.AddSingleton<QuikBridgeEventAggregator>();
+        var quikBridgeConfig = new QuikBridgeConfig();
+        if (configuration != null)
+        {
+            quikBridgeConfig = configuration.GetSection("Bridge").Get<QuikBridgeConfig>() ??
+                                   new QuikBridgeConfig();
+        }
+        
+        serviceCollection.AddSingleton(quikBridgeConfig);
+        
         serviceCollection.AddSingleton<QuikBridgeNetEvents.QuikBridgeEventAggregator>();
         serviceCollection.AddSingleton<ILogger>(provider => new LoggerConfiguration()
             .WriteTo.Console()

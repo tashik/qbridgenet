@@ -3,42 +3,34 @@ using System.Net.Sockets;
 using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using QuikBridgeNet.Entities;
 using QuikBridgeNet.Entities.CommandData;
 using QuikBridgeNet.Entities.ProtocolData;
 using QuikBridgeNet.Events;
+using QuikBridgeNetDomain;
 using QuikBridgeNetDomain.Entities;
 using Serilog;
 
 namespace QuikBridgeNet;
 
-public class QuikBridgeProtocolHandler
+public class QuikBridgeProtocolHandler(QuikBridgeEventDispatcher eventDispatcher, QuikBridgeConfig bridgeConfig)
 {
     private Socket? _clientSocket;
     private readonly byte[] _buffer = new byte[1024];
     private StringBuilder _accumulatedData = new();
 
-    private bool _isStopped;
-    
+    private bool _isStopped = true;
+
     private const string MsgTypeReq = "req";
     private const string MsgTypeResp = "ans";
     private const string MsgTypeEnd = "end";
     private const string MsgTypeVersion = "ver";
-    
-    private readonly QuikBridgeEventDispatcher _eventDispatcher;
 
     private DatasourceCallbackReceived? _datasourceCallbackReceived;
     
     private readonly BlockingCollection<JsonMessage> _dataQueue = new();
 
-    public bool IsExtendedLogging { get; set; } = true;
+    public bool IsExtendedLogging { get; set; } = bridgeConfig.UseExtendedLogging;
 
-    public QuikBridgeProtocolHandler(QuikBridgeEventDispatcher eventDispatcher)
-    {
-        _eventDispatcher = eventDispatcher;
-        _isStopped = true;
-    }
-    
     public void RegisterDataSourceCallback(DatasourceCallbackReceived callback)
     {
         _datasourceCallbackReceived = callback;
@@ -142,7 +134,7 @@ public class QuikBridgeProtocolHandler
             reqJson = reqJson.Remove(reqJson.Length - 1);
         }
         reqJson += "}}";
-        //Log.Debug($"REQ: {reqJson}");
+        if (IsExtendedLogging) Log.Debug($"REQ: {reqJson}");
         await SendMessageAsync(reqJson);
     }
 
@@ -228,7 +220,7 @@ public class QuikBridgeProtocolHandler
             {
                 case MsgTypeEnd:
                 {
-                    await _eventDispatcher.DispatchAsync(new SocketConnectionCloseEvent());
+                    await eventDispatcher.DispatchAsync(new SocketConnectionCloseEvent());
                     return;
                 }
                 case MsgTypeVersion:
@@ -253,7 +245,7 @@ public class QuikBridgeProtocolHandler
     
     private void VerArrived(int ver)
     {
-        Log.Debug($"Version of protocol: {ver}");
+        if (IsExtendedLogging) Log.Debug($"Version of protocol: {ver}");
     }
     
     private async Task OnNewMessage(int id, string type, JToken? data)
@@ -275,11 +267,11 @@ public class QuikBridgeProtocolHandler
                 }
                 else
                 {
-                    await _eventDispatcher.DispatchAsync(new ReqArrivedEvent(jReq));
+                    await eventDispatcher.DispatchAsync(new ReqArrivedEvent(jReq));
                 }
                 break;
             case MsgTypeResp:
-                await _eventDispatcher.DispatchAsync(new RespArrivedEvent(jReq));
+                await eventDispatcher.DispatchAsync(new RespArrivedEvent(jReq));
                 break;
             default:
                 Console.WriteLine("Unsupported message type");
@@ -295,7 +287,7 @@ public class QuikBridgeProtocolHandler
         {
             try
             {
-                JObject? jDoc = TryParseJson(accumulatedString);
+                var jDoc = TryParseJson(accumulatedString);
 
                 if (jDoc == null)
                 {
