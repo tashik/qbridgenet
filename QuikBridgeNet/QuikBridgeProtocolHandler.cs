@@ -332,18 +332,47 @@ public class QuikBridgeProtocolHandler(QuikBridgeEventDispatcher eventDispatcher
     private int FindEndOfJson(string data)
     {
         int openBraces = 0;
+        bool isInString = false;
+        bool isEscaped = false;
+        bool objectStarted = false;
 
         for (int i = 0; i < data.Length; i++)
         {
-            if (data[i] == '{')
+            var currentChar = data[i];
+
+            if (isEscaped)
             {
+                isEscaped = false;
+                continue;
+            }
+
+            if (currentChar == '\\' && isInString)
+            {
+                isEscaped = true;
+                continue;
+            }
+
+            if (currentChar == '"')
+            {
+                isInString = !isInString;
+                continue;
+            }
+
+            if (isInString)
+            {
+                continue;
+            }
+
+            if (currentChar == '{')
+            {
+                objectStarted = true;
                 openBraces++;
             }
-            else if (data[i] == '}')
+            else if (currentChar == '}')
             {
                 openBraces--;
 
-                if (openBraces == 0)
+                if (objectStarted && openBraces == 0)
                 {
                     return i;
                 }

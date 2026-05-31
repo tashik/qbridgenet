@@ -11,4 +11,11 @@ public class QMessage
     public string Interval { get; set; } = "";
     public string DataSource { get; set; } = "";
     public string ParamName { get; set; } = "";
+    public string FirmId { get; set; } = "";
+    public string ClientCode { get; set; } = "";
+    public string Account { get; set; } = "";
+    public string CurrencyCode { get; set; } = "";
+    public string Tag { get; set; } = "";
+    public int LimitKind { get; set; }
+    public int PositionType { get; set; }
 }

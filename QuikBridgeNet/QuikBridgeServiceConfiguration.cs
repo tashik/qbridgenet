@@ -9,6 +9,9 @@ namespace QuikBridgeNet;
 
 public static class QuikBridgeServiceConfiguration
 {
+    /// <summary>
+    /// Регистрирует сервисы QuikBridge и при наличии конфигурации привязывает секцию Bridge.
+    /// </summary>
     public static void ConfigureServices(IServiceCollection serviceCollection, IConfiguration? configuration)
     {
         var quikBridgeConfig = new QuikBridgeConfig();

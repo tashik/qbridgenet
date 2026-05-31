@@ -3,15 +3,14 @@ namespace QuikBridgeNet;
 public class MessageIndexer
 {
     private const int MaxId = 400;
-    private const int OffsetMilliseconds = 3570000; // Example constant for the offset
+    private const int TimeBucketMilliseconds = 20;
     private int _lastTimeIndex = 0;
     private readonly object _locker = new();
 
     public int GetIndex(int traderId = 0)
     {
-        int currentTimeIndex = (int)(DateTime.Now.TimeOfDay.TotalMilliseconds / 10.0) - OffsetMilliseconds;
+        int currentTimeIndex = (int)(DateTime.UtcNow.TimeOfDay.TotalMilliseconds / TimeBucketMilliseconds);
 
-        // Use Interlocked to safely update _lastTimeIndex
         int newLastTimeIndex;
         lock (_locker)
         {

@@ -8,4 +8,6 @@ public class QuikBridgeConfig
 
     public bool UseExtendedLogging { get; set; } = false;
     public bool UseExtendedEventLogging { get; set; } = false;
+    public int EventQueueWarningThreshold { get; set; } = 0;
+    public int EventHandlerBacklogWarningThreshold { get; set; } = 0;
 }

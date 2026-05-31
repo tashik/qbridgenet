@@ -52,11 +52,11 @@ public class ReqArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeE
                 if (funcNameToken != null)
                 {
                     var funcName = funcNameToken.ToString();
+                    var argumentsToken = domainEvent.Req.body?["arguments"];
                     switch (funcName)
                     {
                         case "OnAllTrade":
-                            var resultToken = domainEvent.Req.body?["arguments"] ?? null;
-                            if (resultToken is JArray jArray)
+                            if (argumentsToken is JArray jArray)
                             {
                                 var trades = new List<AllTrade>();
                                 foreach (var r in jArray)
@@ -77,38 +77,38 @@ public class ReqArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeE
                             }
                             
                             break;
+                        case "OnOrder":
+                            if (TryGetTransactionalOrder(argumentsToken, out var order))
+                            {
+                                _ = globalEventAggregator.RaiseEvent(new OrderArrivedEvent() { Order = order });
+                            }
+                            break;
+                        case "OnTransReply":
+                            if (TryGetTransactionalOrder(argumentsToken, out var transReplyOrder))
+                            {
+                                _ = globalEventAggregator.RaiseEvent(new TransactionReplyArrivedEvent() { Order = transReplyOrder });
+                            }
+                            break;
                     }
                 }
                 break;
             default:
                 _ = globalEventAggregator.RaiseEvent(new ServiceMessageArrivedEvent() {Response = domainEvent.Req, BridgeMessage = qMessage});
                 break;
-                /*
-            elif data["method"] == "callback" and "OnOrder" == data["name"]:
-                order = data["arguments"][0]
-
-                if order["trans_id"] != "0": # не программные ордера будут приходить с 0
-                    event_data = {
-                        "order": order
-                    }
-                    event = Event(EVENT_ORDER_UPDATE, event_data)
-                    self.fire(event)
-            elif data["method"] == "callback" and "OnTransReply" == data["name"]:
-                order = data["arguments"][0]
-                if order["trans_id"] != "0": # не программные ордера будут приходить с 0
-                    event_data = {
-                        "order": order
-                    }
-                    event = Event(EVENT_ORDER_UPDATE, event_data)
-                    self.fire(event)
-            elif data['method'] == "callback" and "OnTrade" == data["name"]:
-                trade = data["arguments"][0]
-                event_data = {
-                    "trade": trade
-                }
-                event = Event(EVENT_NEW_TRADE, event_data) */
         }
 
         return Task.CompletedTask;
+    }
+
+    private static bool TryGetTransactionalOrder(JToken? argumentsToken, out Order? order)
+    {
+        order = null;
+        if (argumentsToken is not JArray { Count: > 0 } jArray)
+        {
+            return false;
+        }
+
+        order = jArray[0].ToObject<Order>();
+        return order != null && order.trans_id != "0";
     }
 }

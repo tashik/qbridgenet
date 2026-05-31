@@ -14,6 +14,9 @@ namespace QuikBridgeNet;
 
 public delegate void DatasourceCallbackReceived(JsonMessage jMsg);
 
+/// <summary>
+/// Клиент верхнего уровня для работы с процессом QuikQtBridge.
+/// </summary>
 public class QuikBridge(
     QuikBridgeProtocolHandler protocolHandler,
     MessageRegistry msgRegistry,
@@ -24,19 +27,22 @@ public class QuikBridge(
 
     private readonly MessageIndexer _msgIndexer = new();
     private readonly QuikBridgeSubscriptionManager _subscriptionManager = new();
+    private readonly QuikBridgeDatasourceManager _datasourceManager = new();
+    private readonly QuikBridgeCallbackRegistry<MessageType> _globalCallbackRegistry = new();
 
-    private readonly Dictionary<string, object> _dataSources = new();
+    private readonly ConcurrentDictionary<string, object> _dataSources = new();
 
     private QuikBridgeConnectionState _connectionState = QuikBridgeConnectionState.Disconnected;
 
     private bool _isExtendedLogging = bridgeConfig.UseExtendedLogging;
     
-    private readonly ConcurrentDictionary<string, int> _paramSubscriptions = new();
-    
     #endregion
     
     #region Properties
 
+    /// <summary>
+    /// Включает расширенное логирование протокола для диагностики.
+    /// </summary>
     public bool IsExtendedLogging
     {
         get => _isExtendedLogging;
@@ -48,6 +54,9 @@ public class QuikBridge(
         }
     }
 
+    /// <summary>
+    /// Текущее состояние подключения клиента к мосту.
+    /// </summary>
     public QuikBridgeConnectionState ConnectionState
     {
         get => _connectionState;
@@ -72,6 +81,9 @@ public class QuikBridge(
     
     #region Methods
 
+    /// <summary>
+    /// Открывает сокетное соединение с QuikQtBridge и регистрирует встроенные callback-обработчики.
+    /// </summary>
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (ConnectionState != QuikBridgeConnectionState.Disconnected) return;
@@ -92,12 +104,17 @@ public class QuikBridge(
                     {
                         foreach (var r in result)
                         {
-                            var dsName = registeredReq.Ticker + "[" + registeredReq.Interval + "]";
+                            var dsName = BuildDatasourceName(registeredReq.Ticker, registeredReq.Interval);
                             _dataSources[dsName] = r;
                             if (IsExtendedLogging)
                                 Log.Debug("DataSource with name {dsName} has been created; callback is set up", dsName);
                             await SetDsUpdateCallback(r, dsName);
-                            _ = eventAggregator.RaiseEvent(new DataSourceSetEvent() {DataSourceName = dsName, BridgeMessage = registeredReq});
+
+                            var closeMessageId = await _datasourceManager.MarkReadyAsync(dsName, () => CloseDatasourceInternal(dsName, r));
+                            if (closeMessageId == 0 && _datasourceManager.HasConsumers(dsName))
+                            {
+                                _ = eventAggregator.RaiseEvent(new DataSourceSetEvent() {DataSourceName = dsName, BridgeMessage = registeredReq});
+                            }
                         }
                     }
                 }/* else if (registeredReq.MessageType == MessageType.OrderBookInit)
@@ -120,13 +137,16 @@ public class QuikBridge(
 
     private async Task SetupCallbacks()
     {
-        MessageType[] callbacks = { MessageType.OnTrade, MessageType.OnTransReply, MessageType.OnOrder};
+        MessageType[] callbacks = { MessageType.OnAllTrade, MessageType.OnTransReply, MessageType.OnOrder};
         foreach (var cb in callbacks)
         {
             await SetGlobalCallback(cb);
         }
     }
     
+    /// <summary>
+    /// Регистрирует callback для обновлений datasource, приходящих от моста.
+    /// </summary>
     public void RegisterDataSourceCallback(DatasourceCallbackReceived callback)
     {
         protocolHandler.RegisterDataSourceCallback(callback);
@@ -156,6 +176,9 @@ public class QuikBridge(
         return msgId;
     }
 
+    /// <summary>
+    /// Запрашивает список доступных классов инструментов из QUIK.
+    /// </summary>
     public async Task<int> GetClassesList()
     {
         var data = new JsonReqData()
@@ -166,6 +189,9 @@ public class QuikBridge(
         return await SendRequest(data, new MetaData() { MessageType = MessageType.Classes });
     }
     
+    /// <summary>
+    /// Запрашивает список инструментов для указанного кода класса.
+    /// </summary>
     public async Task<int> GetClassSecurities(string classCode)
     {
         string[] args = {"\"" + classCode + "\""};
@@ -178,6 +204,9 @@ public class QuikBridge(
         return await SendRequest(data, new ClassCode() { MessageType = MessageType.Securities, InstrumentClass = classCode }, false);
     }
     
+    /// <summary>
+    /// Запрашивает данные контракта по инструменту.
+    /// </summary>
     public async Task<int> GetSecurityInfo(string classCode, string secCode)
     {
         string[] args = {"\"" + classCode + "\",\"" + secCode + "\""};
@@ -190,8 +219,106 @@ public class QuikBridge(
         return await SendRequest(data, new Subscription() { MessageType = MessageType.SecurityContract, InstrumentClass = classCode, Ticker = secCode}, false);
     }
 
+    /// <summary>
+    /// Запрашивает текущую позицию по бумаге на торговом счете.
+    /// </summary>
+    public async Task<int> GetAccountPosition(string firmId, string clientCode, string secCode, string account, int limitKind)
+    {
+        string[] args = {$"\"{firmId}\",\"{clientCode}\",\"{secCode}\",\"{account}\",{limitKind}"};
+        var data = new JsonReqData()
+        {
+            method = "invoke",
+            function = MessageType.AccountPosition.GetDescription(),
+            arguments = args
+        };
+        var metaData = new AccountPositionRequest()
+        {
+            MessageType = MessageType.AccountPosition,
+            FirmId = firmId,
+            ClientCode = clientCode,
+            SecCode = secCode,
+            Account = account,
+            LimitKind = limitKind
+        };
+        return await SendRequest(data, metaData, false);
+    }
+
+    /// <summary>
+    /// Запрашивает текущее состояние денежной позиции.
+    /// </summary>
+    public async Task<int> GetMoneyPosition(string firmId, string clientCode, string tag, string currencyCode, int limitKind)
+    {
+        string[] args = {$"\"{firmId}\",\"{clientCode}\",\"{tag}\",\"{currencyCode}\",{limitKind}"};
+        var data = new JsonReqData()
+        {
+            method = "invoke",
+            function = MessageType.MoneyPosition.GetDescription(),
+            arguments = args
+        };
+        var metaData = new MoneyPositionRequest()
+        {
+            MessageType = MessageType.MoneyPosition,
+            FirmId = firmId,
+            ClientCode = clientCode,
+            Tag = tag,
+            CurrencyCode = currencyCode,
+            LimitKind = limitKind
+        };
+        return await SendRequest(data, metaData, false);
+    }
+
+    /// <summary>
+    /// Запрашивает текущую фьючерсную позицию по торговому счету.
+    /// </summary>
+    public async Task<int> GetFuturesHolding(string firmId, string account, string secCode, int positionType)
+    {
+        string[] args = {$"\"{firmId}\",\"{account}\",\"{secCode}\",{positionType}"};
+        var data = new JsonReqData()
+        {
+            method = "invoke",
+            function = MessageType.FuturesHolding.GetDescription(),
+            arguments = args
+        };
+        var metaData = new FuturesHoldingRequest()
+        {
+            MessageType = MessageType.FuturesHolding,
+            FirmId = firmId,
+            Account = account,
+            SecCode = secCode,
+            PositionType = positionType
+        };
+        return await SendRequest(data, metaData, false);
+    }
+
+    /// <summary>
+    /// Запрашивает состояние фьючерсного лимита по торговому счету.
+    /// </summary>
+    public async Task<int> GetFuturesLimit(string firmId, string account, int limitType, string currencyCode)
+    {
+        string[] args = {$"\"{firmId}\",\"{account}\",{limitType},\"{currencyCode}\""};
+        var data = new JsonReqData()
+        {
+            method = "invoke",
+            function = MessageType.FuturesLimit.GetDescription(),
+            arguments = args
+        };
+        var metaData = new FuturesLimitRequest()
+        {
+            MessageType = MessageType.FuturesLimit,
+            FirmId = firmId,
+            Account = account,
+            LimitType = limitType,
+            CurrencyCode = currencyCode
+        };
+        return await SendRequest(data, metaData, false);
+    }
+
+    /// <summary>
+    /// Создаёт datasource в QUIK для указанного инструмента и интервала.
+    /// </summary>
     public async Task<int> CreateDs(string classCode, string secCode, string interval)
     {
+        var dataSourceName = BuildDatasourceName(secCode, interval);
         string[] args = {$"\"{classCode}\",\"{secCode}\",{interval}"};
         var data = new JsonReqData()
         {
@@ -206,7 +333,26 @@ public class QuikBridge(
             InstrumentClass = classCode,
             Interval = interval
         };
-        return await SendRequest(data, metaData, false);
+        var acquireResult = await _datasourceManager.AcquireAsync(dataSourceName, () => SendRequest(data, metaData, false));
+
+        if (!acquireResult.IsFirstReference && _dataSources.ContainsKey(dataSourceName))
+        {
+            _ = eventAggregator.RaiseEvent(new DataSourceSetEvent()
+            {
+                DataSourceName = dataSourceName,
+                BridgeMessage = new QMessage()
+                {
+                    Id = acquireResult.MessageId,
+                    Method = data.function,
+                    MessageType = metaData.MessageType,
+                    Ticker = metaData.Ticker,
+                    ClassCode = metaData.InstrumentClass,
+                    Interval = metaData.Interval
+                }
+            });
+        }
+
+        return acquireResult.MessageId;
     }
 
     private async Task<int> SetDsUpdateCallback(object datasource, string dataSourceName)
@@ -228,6 +374,9 @@ public class QuikBridge(
         return await SendRequest(data, metaData, false);
     }
 
+    /// <summary>
+    /// Запрашивает значение бара из ранее созданного datasource.
+    /// </summary>
     public async Task<int> GetBar(string dataSourceName, MessageType barFunc, int barIndex)
     {
         if (!_dataSources.TryGetValue(dataSourceName, out var source)) return 0;
@@ -247,21 +396,16 @@ public class QuikBridge(
         return await SendRequest(data, metaData, false);
     }
 
+    /// <summary>
+    /// Закрывает ранее созданный datasource.
+    /// </summary>
     public async Task<int> CloseDs(string dataSourceName)
     {
-        if (!_dataSources.TryGetValue(dataSourceName, out var source)) return 0;
-        var data = new JsonReqData()
+        return await _datasourceManager.ReleaseAsync(dataSourceName, async () =>
         {
-            method = "invoke",
-            obj = source,
-            function = "Close",
-        };
-        var metaData = new DatasourceCallback()
-        {
-            MessageType = MessageType.DatasourceClose,
-            DataSource = dataSourceName
-        };
-        return await SendRequest(data, metaData);
+            if (!_dataSources.TryRemove(dataSourceName, out var source)) return 0;
+            return await CloseDatasourceInternal(dataSourceName, source);
+        });
     }
     
     private async Task<int> InitOrderBook(string classCode, string secCode)
@@ -300,16 +444,17 @@ public class QuikBridge(
         return await SendRequest(data, metaData, false);
     }
 
+    /// <summary>
+    /// Подписывается на обновления стакана по инструменту.
+    /// </summary>
     public async Task<Guid> SubscribeToOrderBook(string classCode, string secCode)
     {
         var key = $"{classCode}:{secCode}:orderbook";
-        var msgId = 0;
-        if (!_subscriptionManager.ContainsKey(key))
+        var subscriptionEntry = await _subscriptionManager.SubscribeAsync(key, async () =>
         {
-            // msgId = await InitOrderBook(classCode, secCode);
-            msgId = await DoSubscribeToOrderBook(classCode, secCode);
-        }
-        var subscriptionEntry = _subscriptionManager.Subscribe(key, msgId);
+            // return await InitOrderBook(classCode, secCode);
+            return await DoSubscribeToOrderBook(classCode, secCode);
+        });
         return subscriptionEntry.SubscriptionToken;
     }
 
@@ -330,18 +475,13 @@ public class QuikBridge(
         return await SendRequest(data, metaData);
     }
 
+    /// <summary>
+    /// Удаляет один токен подписки на стакан и отписывается от QUIK, когда уходит последний подписчик.
+    /// </summary>
     public async Task<int> UnsubscribeToOrderBook(string classCode, string secCode, Guid subscriptionToken)
     {
         var key = $"{classCode}:{secCode}:orderbook";
-        var msgId = 0;
-
-        if (!_subscriptionManager.ContainsKey(key))
-        {
-            return msgId;
-        }
-        _subscriptionManager.Unsubscribe(key, subscriptionToken);
-
-        if (!_subscriptionManager.ContainsKey(key))
+        var msgId = await _subscriptionManager.UnsubscribeAsync(key, subscriptionToken, async () =>
         {
             var data = new JsonCommandDataSubscribeQuotes()
             {
@@ -355,19 +495,22 @@ public class QuikBridge(
                 InstrumentClass = classCode,
                 Ticker = secCode
             };
-            msgId = await SendRequest(data, metaData);
-        }
-        if (IsExtendedLogging)
+            return await SendRequest(data, metaData);
+        });
+
+        if (IsExtendedLogging && msgId != 0)
             Log.Information("{Sec} orderbook is unsubscribed", secCode);
 
         return msgId;
     }
 
+    /// <summary>
+    /// Подписывается на обновления параметра из таблицы котировок.
+    /// </summary>
     public async Task<Guid> SubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
     {
         var key = $"{classCode}:{secCode}:{paramName}";
-        var msgId = 0;
-        if (!_subscriptionManager.ContainsKey(key))
+        var subscriptionEntry = await _subscriptionManager.SubscribeAsync(key, async () =>
         {
             var data = new JsonCommandDataSubscribeParam()
             {
@@ -383,13 +526,14 @@ public class QuikBridge(
                 Ticker = secCode,
                 ParamName = paramName
             };
-            msgId = await SendRequest(data, metaData);
-        }
-
-        var subscriptionEntry = _subscriptionManager.Subscribe(key, msgId);
+            return await SendRequest(data, metaData);
+        });
         return subscriptionEntry.SubscriptionToken;
     }
 
+    /// <summary>
+    /// Запрашивает текущее значение параметра из таблицы котировок.
+    /// </summary>
     public async Task<int> GetQuotesTableParam(string classCode, string secCode, string paramName)
     {
         string[] args = {$"\"{classCode}\",\"{secCode}\",\"{paramName}\""};
@@ -409,18 +553,13 @@ public class QuikBridge(
         return await SendRequest(data, metaData, false);
     }
 
+    /// <summary>
+    /// Удаляет один токен подписки на параметр и отписывается от QUIK, когда уходит последний подписчик.
+    /// </summary>
     public async Task<int> UnsubscribeToQuotesTableParams(string classCode, string secCode, string paramName, Guid subscriptionToken)
     {
         var key = $"{classCode}:{secCode}:{paramName}";
-        var msgId = 0;
-
-        if (!_subscriptionManager.ContainsKey(key))
-        {
-            return 0;
-        }
-        _subscriptionManager.Unsubscribe(key, subscriptionToken);
-
-        if (!_subscriptionManager.ContainsKey(key))
+        var msgId = await _subscriptionManager.UnsubscribeAsync(key, subscriptionToken, async () =>
         {
             var data = new JsonCommandDataSubscribeParam()
             {
@@ -435,29 +574,32 @@ public class QuikBridge(
                 InstrumentClass = classCode,
                 Ticker = secCode
             };
-            msgId = await SendRequest(data, metaData);
-        }
+            return await SendRequest(data, metaData);
+        });
 
-        if (IsExtendedLogging)
-                Log.Information("{Sec} {Param} is unsubscribed", secCode, paramName);
+        if (IsExtendedLogging && msgId != 0)
+            Log.Information("{Sec} {Param} is unsubscribed", secCode, paramName);
         
         return msgId;
     }
 
+    /// <summary>
+    /// Отправляет транзакцию в QUIK.
+    /// </summary>
     public async Task<int> SendTransaction(TransactionBase transaction)
     {
         var transJson = JsonConvert.SerializeObject(transaction);
         string[] args = { transJson };
         var data = new JsonReqData()
         {
-            method = "invoike",
+            method = "invoke",
             function = "sendTransaction",
             arguments = args
         };
 
         var metaData = new TransactionMeta()
         {
-            MessageType = MessageType.UnsubscribeParam,
+            MessageType = MessageType.SendTransaction,
             InstrumentClass = transaction.CLASSCODE,
             Ticker = transaction.SECCODE,
             Transaction = transaction
@@ -465,17 +607,44 @@ public class QuikBridge(
         return await SendRequest(data, metaData);
     }
 
+    /// <summary>
+    /// Регистрирует глобальный callback QUIK по описанию типа сообщения.
+    /// </summary>
     public async Task<int> SetGlobalCallback(MessageType name)
     {
-        var data = new JsonCommandDataCallback()
+        return await _globalCallbackRegistry.RegisterAsync(name, async () =>
         {
-            method = "register",
-            callback = name.GetDescription()
-        };
+            var data = new JsonCommandDataCallback()
+            {
+                method = "register",
+                callback = name.GetDescription()
+            };
 
-        var metaData = new MetaData()
+            var metaData = new MetaData()
+            {
+                MessageType = name
+            };
+            return await SendRequest(data, metaData);
+        });
+    }
+
+    private static string BuildDatasourceName(string ticker, string interval)
+    {
+        return ticker + "[" + interval + "]";
+    }
+
+    private async Task<int> CloseDatasourceInternal(string dataSourceName, object source)
+    {
+        var data = new JsonReqData()
         {
-            MessageType = name
+            method = "invoke",
+            obj = source,
+            function = "Close",
+        };
+        var metaData = new DatasourceCallback()
+        {
+            MessageType = MessageType.DatasourceClose,
+            DataSource = dataSourceName
         };
         return await SendRequest(data, metaData);
     }
@@ -517,6 +686,32 @@ public class QuikBridge(
             case DatasourceCallback ds:
                 qMessage.DataSource = ds.DataSource;
                 break;
+            case AccountPositionRequest accountPositionRequest:
+                qMessage.FirmId = accountPositionRequest.FirmId;
+                qMessage.ClientCode = accountPositionRequest.ClientCode;
+                qMessage.Ticker = accountPositionRequest.SecCode;
+                qMessage.Account = accountPositionRequest.Account;
+                qMessage.LimitKind = accountPositionRequest.LimitKind;
+                break;
+            case MoneyPositionRequest moneyPositionRequest:
+                qMessage.FirmId = moneyPositionRequest.FirmId;
+                qMessage.ClientCode = moneyPositionRequest.ClientCode;
+                qMessage.Tag = moneyPositionRequest.Tag;
+                qMessage.CurrencyCode = moneyPositionRequest.CurrencyCode;
+                qMessage.LimitKind = moneyPositionRequest.LimitKind;
+                break;
+            case FuturesHoldingRequest futuresHoldingRequest:
+                qMessage.FirmId = futuresHoldingRequest.FirmId;
+                qMessage.Account = futuresHoldingRequest.Account;
+                qMessage.Ticker = futuresHoldingRequest.SecCode;
+                qMessage.PositionType = futuresHoldingRequest.PositionType;
+                break;
+            case FuturesLimitRequest futuresLimitRequest:
+                qMessage.FirmId = futuresLimitRequest.FirmId;
+                qMessage.Account = futuresLimitRequest.Account;
+                qMessage.LimitKind = futuresLimitRequest.LimitType;
+                qMessage.CurrencyCode = futuresLimitRequest.CurrencyCode;
+                break;
         }
 
         msgRegistry.RegisterMessage(id, qMessage);
@@ -527,6 +722,25 @@ public class QuikBridge(
         ConnectionStateChanged?.Invoke(newState);
     }
 
+    /// <summary>
+    /// Возвращает снимок внутренних метрик очередей и обработчиков событий.
+    /// </summary>
+    public IReadOnlyCollection<EventProcessingMetrics> GetEventProcessingMetrics()
+    {
+        return eventAggregator.GetAllMetricsSnapshots();
+    }
+
+    /// <summary>
+    /// Возвращает снимок внутренних метрик для конкретного типа события.
+    /// </summary>
+    public EventProcessingMetrics GetEventProcessingMetrics<TEvent>()
+    {
+        return eventAggregator.GetMetricsSnapshot<TEvent>();
+    }
+
+    /// <summary>
+    /// Останавливает обработчик протокола и завершает внутреннюю обработку событий.
+    /// </summary>
     public void Finish()
     {
         protocolHandler.Finish();
@@ -540,6 +754,9 @@ public class QuikBridge(
     
     #region Delegates and events
     
+    /// <summary>
+    /// Вызывается при изменении состояния подключения к мосту.
+    /// </summary>
     public delegate void ConnectionStateChangedEventHandler(QuikBridgeConnectionState newConnectionState);
     public event ConnectionStateChangedEventHandler? ConnectionStateChanged;
     

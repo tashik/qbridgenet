@@ -2,8 +2,8 @@ namespace QuikBridgeNetDomain.Entities;
 
 public class Quotation
 {
-    public string price { get; set; }
-    public string quantity { get; set; }
+    public string price { get; set; } = string.Empty;   
+    public string quantity { get; set; } = string.Empty;
 }
 public class Bid : Quotation
 {
@@ -30,5 +30,5 @@ public class OrderBook
 public class OrderBookData
 {
     public string method { get; set; } = "";
-    public IList<OrderBook> result { get; set; }
+    public IList<OrderBook> result { get; set; } = new List<OrderBook>();
 }

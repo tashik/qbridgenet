@@ -54,6 +54,14 @@ public enum MessageType
     OnAllTrade,
     [Description("getParamEx2")]
     GetParam,
+    [Description("getDepoEx")]
+    AccountPosition,
+    [Description("getMoneyEx")]
+    MoneyPosition,
+    [Description("getFuturesHolding")]
+    FuturesHolding,
+    [Description("getFuturesLimit")]
+    FuturesLimit,
     
 }
 

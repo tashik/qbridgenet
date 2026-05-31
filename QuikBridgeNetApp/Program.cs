@@ -9,7 +9,6 @@ class Program
 {
     static async Task Main(string[] args)
     {
-        
         var builder = new ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
             .AddJsonFile("appsettings.json", false, true);
@@ -17,31 +16,52 @@ class Program
 
         var serviceCollection = new ServiceCollection();
         QuikBridgeServiceConfiguration.ConfigureServices(serviceCollection, configuration);
-        
-        var serviceProvider = serviceCollection.BuildServiceProvider();
+        using var serviceProvider = serviceCollection.BuildServiceProvider();
 
-        // Resolve the client
         var client = serviceProvider.GetRequiredService<QuikBridge>();
         client.IsExtendedLogging = false;
         client.ConnectionStateChanged += OnBridgeConnectionStateChanged;
-        var dataSource = "";
+        using var cts = new CancellationTokenSource();
+
+        const string classCode = "SPBFUT";
+        const string secCode = "SiH5";
+        const string paramName = "LAST";
+        const string firmId = "YOUR_FIRM_ID";
+        const string clientCode = "YOUR_CLIENT_CODE";
+        const string moneyTag = "YOUR_MONEY_TAG";
+        const string accountPositionAccount = "YOUR_ACCOUNT_ID";
+        const string futuresAccount = "YOUR_FUTURES_ACCOUNT";
+        const string moneyCurrencyCode = "SUR";
         
         client.RegisterDataSourceCallback((msg) =>
         {
             Log.Information("DataSource message {body}", msg.body?.ToString());
         });
-        
-        CancellationTokenSource cts = new CancellationTokenSource();
-        
-        // Configure Serilog
+
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Debug()
             .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
         
         var globalEventAggregator = serviceProvider.GetRequiredService<QuikBridgeNetEvents.QuikBridgeEventAggregator>();
-        
-        // Subscribe to the global events
+
+        RegisterMarketDataHandlers(globalEventAggregator, client);
+        RegisterAccountStateHandlers(globalEventAggregator);
+
+        await client.StartAsync(cts.Token);
+
+        var subscriptionToken = await RunMarketDataExample(client, classCode, secCode, paramName);
+        await RunAccountStateExample(client, firmId, clientCode, moneyTag, accountPositionAccount, futuresAccount, secCode, moneyCurrencyCode);
+
+        Console.WriteLine("Press any key to stop...");
+        Console.ReadKey();
+        await client.UnsubscribeToQuotesTableParams(classCode, secCode, paramName, subscriptionToken);
+        client.Finish();
+        await Log.CloseAndFlushAsync();
+    }
+
+    private static void RegisterMarketDataHandlers(QuikBridgeNetEvents.QuikBridgeEventAggregator globalEventAggregator, QuikBridge client)
+    {
         globalEventAggregator.SubscribeToInstrumentClassesUpdate( (eventObj) =>
         {
             Log.Information("{DataType} arrived: {NumClasses}", eventObj.InstrumentClassType.GetDescription(), eventObj.InstrumentClasses.Count);
@@ -69,25 +89,25 @@ class Program
 
             return Task.CompletedTask;
         });
-        
+
         globalEventAggregator.SubscribeToInstrumentParameterUpdate( eventArgs =>
         {
             Log.Information("Instrument parameter {Name} current value {Val} ", eventArgs.ParamName, eventArgs.ParamValue);
             return Task.CompletedTask;
         });
-        
+
         globalEventAggregator.SubscribeToOrderBookUpdate( eventArgs =>
         {
             Log.Information("Order book: bids number {Bids}; asks number {Offers} ", eventArgs.OrderBook?.bid_count, eventArgs.OrderBook?.offer_count);
             return Task.CompletedTask;
         });
-        
+
         globalEventAggregator.SubscribeToServiceMessages( eventObj =>
         {
             Log.Information("Arrived message with type {MsgType}", eventObj.BridgeMessage?.MessageType.GetDescription());
             return Task.CompletedTask;
         });
-        
+
         globalEventAggregator.SubscribeToDataSourceSet( async eventObj =>
         {
             if (eventObj.BridgeMessage != null)
@@ -96,35 +116,99 @@ class Program
                     eventObj.BridgeMessage.Ticker, eventObj.BridgeMessage.Interval);
             }
 
-            dataSource = eventObj.DataSourceName;
             await client.GetBar(eventObj.DataSourceName, MessageType.Close, 1);
         });
-        
-        await client.StartAsync(cts.Token);
+    }
 
-        //var testClassCode = "TQBR";
-        var testClassCode = "SPBFUT";
-        
-        //var testTicker = "SBER";
-        var testTicker = "SiH5";
+    private static void RegisterAccountStateHandlers(QuikBridgeNetEvents.QuikBridgeEventAggregator globalEventAggregator)
+    {
+        globalEventAggregator.SubscribeToAccountPositions(eventArgs =>
+        {
+            if (eventArgs.Position != null)
+            {
+                Log.Information("Бумажная позиция: {Security} остаток {Balance} средняя цена {AvgPrice}",
+                    eventArgs.Position.sec_code,
+                    eventArgs.Position.currentbal,
+                    eventArgs.Position.wa_position_price);
+            }
 
-        //await client.GetClassesList();
-        //await client.GetClassSecurities(testClassCode);
-        //await client.GetSecurityInfo(testClassCode, testTicker);
+            return Task.CompletedTask;
+        });
+
+        globalEventAggregator.SubscribeToMoneyPositions(eventArgs =>
+        {
+            if (eventArgs.Position != null)
+            {
+                Log.Information("Денежная позиция: {Currency} остаток {Balance} заблокировано {Locked}",
+                    eventArgs.Position.currcode,
+                    eventArgs.Position.currentbal,
+                    eventArgs.Position.locked);
+            }
+
+            return Task.CompletedTask;
+        });
+
+        globalEventAggregator.SubscribeToFuturesHoldings(eventArgs =>
+        {
+            if (eventArgs.Holding != null)
+            {
+                Log.Information("Срочная позиция: {Security} net {Net} VM {VarMargin}",
+                    eventArgs.Holding.sec_code,
+                    eventArgs.Holding.totalnet,
+                    eventArgs.Holding.varmargin);
+            }
+
+            return Task.CompletedTask;
+        });
+
+        globalEventAggregator.SubscribeToFuturesLimits(eventArgs =>
+        {
+            if (eventArgs.Limit != null)
+            {
+                Log.Information("Срочный лимит: {Currency} limit {Limit} used {Used}",
+                    eventArgs.Limit.currcode,
+                    eventArgs.Limit.cbplimit,
+                    eventArgs.Limit.cbplused);
+            }
+
+            return Task.CompletedTask;
+        });
+    }
+
+    private static async Task<Guid> RunMarketDataExample(QuikBridge client, string classCode, string secCode, string paramName)
+    {
+        // Минимальный пример: подписка на один параметр таблицы котировок с выводом обновлений в лог.
         Thread.Sleep(5000);
-        var subscriptionToken = await client.SubscribeToQuotesTableParams(testClassCode, testTicker, "LAST");
-            
-        //await client.SubscribeToOrderBook( testClassCode, testTicker);
-        
-        //await client.CreateDs(testClassCode, testTicker, "5");
+        return await client.SubscribeToQuotesTableParams(classCode, secCode, paramName);
+    }
 
-        //await client.SetGlobalCallback(MessageType.OnAllTrade);
-        
-        Console.WriteLine("Press any key to stop...");
-        Console.ReadKey();
-        await client.UnsubscribeToQuotesTableParams(testClassCode, testTicker, "LAST", subscriptionToken);
-        client.Finish();
-        await Log.CloseAndFlushAsync();
+    private static async Task RunAccountStateExample(
+        QuikBridge client,
+        string firmId,
+        string clientCode,
+        string moneyTag,
+        string accountPositionAccount,
+        string futuresAccount,
+        string secCode,
+        string moneyCurrencyCode)
+    {
+        // Примеры разовых запросов состояния счёта.
+        // Для реального запуска замените значения констант YOUR_* на идентификаторы из вашего QUIK.
+        if (!firmId.StartsWith("YOUR_") && !clientCode.StartsWith("YOUR_") && !accountPositionAccount.StartsWith("YOUR_"))
+        {
+            await client.GetAccountPosition(firmId, clientCode, secCode, accountPositionAccount, 0);
+        }
+
+        if (!firmId.StartsWith("YOUR_") && !clientCode.StartsWith("YOUR_") && !moneyTag.StartsWith("YOUR_"))
+        {
+            await client.GetMoneyPosition(firmId, clientCode, moneyTag, moneyCurrencyCode, 0);
+        }
+
+        if (!firmId.StartsWith("YOUR_") && !futuresAccount.StartsWith("YOUR_"))
+        {
+            await client.GetFuturesHolding(firmId, futuresAccount, secCode, 0);
+            await client.GetFuturesLimit(firmId, futuresAccount, 0, moneyCurrencyCode);
+        }
     }
 
     static void OnBridgeConnectionStateChanged(QuikBridgeConnectionState newState)
