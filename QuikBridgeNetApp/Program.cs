@@ -297,6 +297,7 @@ class Program
         var contracts = await LoadSecurityContractsAsync(client, eventAggregator, settings, optionSecCodes, cancellationToken);
         Log.Information("Live load: received security info for {Count} instruments", contracts.Count);
 
+            effectiveExpirationDate = ResolveAvailableExpirationDate(contracts, settings, effectiveExpirationDate);
             var filteredContracts = FilterOptionContracts(contracts, settings, effectiveExpirationDate);
         if (filteredContracts.Count == 0)
         {
@@ -589,6 +590,52 @@ class Program
 
             Log.Information("Live load: expiration is not configured, using nearest Thursday {ExpirationDate}", expirationDate);
             return expirationDate;
+        }
+
+        private static int ResolveAvailableExpirationDate(
+            IReadOnlyCollection<SecurityContract> contracts,
+            LiveOptionBoardLoadTestSettings settings,
+            int targetExpirationDate)
+        {
+            var availableExpirations = contracts
+                .Where(contract => string.Equals(contract.class_code, settings.OptionClassCode, StringComparison.OrdinalIgnoreCase))
+                .Where(contract => string.IsNullOrWhiteSpace(settings.BaseAssetClassCode) || string.Equals(contract.base_active_classcode, settings.BaseAssetClassCode, StringComparison.OrdinalIgnoreCase))
+                .Where(contract => !string.IsNullOrWhiteSpace(contract.sec_code))
+                .Where(contract => contract.sec_code.StartsWith(settings.BaseAssetSecCode, StringComparison.OrdinalIgnoreCase))
+                .Select(contract => contract.exp_date)
+                .Where(expDate => expDate > 0)
+                .Distinct()
+                .OrderBy(expDate => expDate)
+                .ToArray();
+
+            if (availableExpirations.Length == 0)
+            {
+                Log.Warning("Live load: could not resolve available expirations for base prefix {BaseAssetSecCode}; keeping target expiration {ExpirationDate}", settings.BaseAssetSecCode, targetExpirationDate);
+                return targetExpirationDate;
+            }
+
+            if (availableExpirations.Contains(targetExpirationDate))
+            {
+                Log.Information("Live load: using requested expiration {ExpirationDate}", targetExpirationDate);
+                return targetExpirationDate;
+            }
+
+            var nextAvailableExpiration = availableExpirations.FirstOrDefault(expDate => expDate >= targetExpirationDate);
+            if (nextAvailableExpiration > 0)
+            {
+                Log.Warning(
+                    "Live load: exact expiration {TargetExpirationDate} not found; using next available expiration {ResolvedExpirationDate}",
+                    targetExpirationDate,
+                    nextAvailableExpiration);
+                return nextAvailableExpiration;
+            }
+
+            var latestAvailableExpiration = availableExpirations[^1];
+            Log.Warning(
+                "Live load: exact expiration {TargetExpirationDate} not found and no later expirations exist; using latest available expiration {ResolvedExpirationDate}",
+                targetExpirationDate,
+                latestAvailableExpiration);
+            return latestAvailableExpiration;
         }
     private static async Task<IReadOnlyCollection<QuoteParamSubscription>> SubscribeToBoardParamsAsync(
         QuikBridge client,
