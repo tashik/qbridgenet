@@ -250,6 +250,8 @@ class Program
             return;
         }
 
+            var effectiveExpirationDate = ResolveEffectiveExpirationDate(settings);
+
         var paramNames = settings.ParamNames
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -268,7 +270,11 @@ class Program
         }
 
         Log.Information("Live load: requesting option board for class {OptionClassCode}", settings.OptionClassCode);
-        var optionSecCodes = await LoadClassSecuritiesAsync(client, eventAggregator, settings, cancellationToken);
+            Log.Information(
+                "Live load: requesting option board for class {OptionClassCode}; target expiration={ExpirationDate}",
+                settings.OptionClassCode,
+                effectiveExpirationDate);
+            var optionSecCodes = await LoadClassSecuritiesAsync(client, eventAggregator, settings, cancellationToken);
         if (optionSecCodes.Count == 0)
         {
             Log.Warning("Не удалось получить список инструментов для класса {OptionClassCode}", settings.OptionClassCode);
@@ -277,17 +283,28 @@ class Program
 
         Log.Information("Live load: received {Count} instruments in class {OptionClassCode}", optionSecCodes.Count, settings.OptionClassCode);
 
+            optionSecCodes = PrefilterSecurityCodesForBaseAsset(optionSecCodes, settings);
+            if (optionSecCodes.Count == 0)
+            {
+                Log.Warning(
+                    "После prefilter по префиксу {BaseAssetSecCode} не осталось кодов инструментов для класса {OptionClassCode}",
+                    settings.BaseAssetSecCode,
+                    settings.OptionClassCode);
+                return;
+            }
+
         Log.Information("Live load: requesting security info for {Count} instruments", optionSecCodes.Count);
         var contracts = await LoadSecurityContractsAsync(client, eventAggregator, settings, optionSecCodes, cancellationToken);
         Log.Information("Live load: received security info for {Count} instruments", contracts.Count);
 
-        var filteredContracts = FilterOptionContracts(contracts, settings);
+            var filteredContracts = FilterOptionContracts(contracts, settings, effectiveExpirationDate);
         if (filteredContracts.Count == 0)
         {
+                LogAvailableContractDimensions(contracts, settings, effectiveExpirationDate);
             Log.Warning(
                 "Не найдено опционов для базового актива {BaseAssetSecCode} и серии {ExpirationDate} в классе {OptionClassCode}",
                 settings.BaseAssetSecCode,
-                settings.ExpirationDate,
+                    effectiveExpirationDate,
                 settings.OptionClassCode);
             return;
         }
@@ -442,15 +459,45 @@ class Program
 
     private static IReadOnlyCollection<SecurityContract> FilterOptionContracts(
         IReadOnlyCollection<SecurityContract> contracts,
-        LiveOptionBoardLoadTestSettings settings)
+            LiveOptionBoardLoadTestSettings settings,
+            int effectiveExpirationDate)
     {
-        IEnumerable<SecurityContract> filtered = contracts
+        var classFiltered = contracts
             .Where(contract => string.Equals(contract.class_code, settings.OptionClassCode, StringComparison.OrdinalIgnoreCase))
-            .Where(contract => string.Equals(contract.base_active_seccode, settings.BaseAssetSecCode, StringComparison.OrdinalIgnoreCase))
+                .Where(contract => effectiveExpirationDate <= 0 || contract.exp_date == effectiveExpirationDate)
+            .ToArray();
+
+        var exactMatch = classFiltered
             .Where(contract => string.IsNullOrWhiteSpace(settings.BaseAssetClassCode) || string.Equals(contract.base_active_classcode, settings.BaseAssetClassCode, StringComparison.OrdinalIgnoreCase))
-            .Where(contract => settings.ExpirationDate <= 0 || contract.exp_date == settings.ExpirationDate)
+            .Where(contract => string.Equals(contract.base_active_seccode, settings.BaseAssetSecCode, StringComparison.OrdinalIgnoreCase))
             .OrderBy(contract => contract.option_strike)
-            .ThenBy(contract => contract.sec_code, StringComparer.OrdinalIgnoreCase);
+            .ThenBy(contract => contract.sec_code, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        IEnumerable<SecurityContract> filtered = exactMatch;
+
+        if (exactMatch.Length == 0 && !string.IsNullOrWhiteSpace(settings.BaseAssetSecCode))
+        {
+            var prefixMatch = classFiltered
+                .Where(contract => string.IsNullOrWhiteSpace(settings.BaseAssetClassCode) || string.Equals(contract.base_active_classcode, settings.BaseAssetClassCode, StringComparison.OrdinalIgnoreCase))
+                .Where(contract => !string.IsNullOrWhiteSpace(contract.base_active_seccode))
+                .Where(contract => contract.base_active_seccode.StartsWith(settings.BaseAssetSecCode, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(contract => contract.option_strike)
+                .ThenBy(contract => contract.sec_code, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (prefixMatch.Length > 0)
+            {
+                var sampleBaseAsset = prefixMatch.Select(contract => contract.base_active_seccode).FirstOrDefault() ?? settings.BaseAssetSecCode;
+                Log.Warning(
+                    "Live load: exact base asset match for {BaseAssetClassCode}:{BaseAssetSecCode} not found; using prefix match and discovered {DiscoveredBaseAsset}",
+                    settings.BaseAssetClassCode,
+                    settings.BaseAssetSecCode,
+                    sampleBaseAsset);
+            }
+
+            filtered = prefixMatch;
+        }
 
         if (settings.MaxInstruments > 0)
         {
@@ -467,6 +514,82 @@ class Program
         return result;
     }
 
+    private static void LogAvailableContractDimensions(
+        IReadOnlyCollection<SecurityContract> contracts,
+            LiveOptionBoardLoadTestSettings settings,
+            int effectiveExpirationDate)
+    {
+        if (contracts.Count == 0)
+        {
+            Log.Warning("Live load: diagnostics unavailable because no security info responses were collected.");
+            return;
+        }
+
+        var topBaseAssets = contracts
+            .Where(contract => string.Equals(contract.class_code, settings.OptionClassCode, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(contract => new { contract.base_active_classcode, contract.base_active_seccode })
+            .OrderByDescending(group => group.Count())
+            .Take(10)
+            .Select(group => $"{group.Key.base_active_classcode}:{group.Key.base_active_seccode} x{group.Count()}");
+
+        var topExpirations = contracts
+            .Where(contract => string.Equals(contract.class_code, settings.OptionClassCode, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(contract => contract.exp_date)
+            .OrderByDescending(group => group.Count())
+            .Take(10)
+            .Select(group => $"{group.Key} x{group.Count()}");
+
+        Log.Warning("Live load diagnostics: top base assets seen: [{TopBaseAssets}]", string.Join(", ", topBaseAssets));
+        Log.Warning("Live load diagnostics: top expirations seen: [{TopExpirations}]", string.Join(", ", topExpirations));
+    }
+
+        private static IReadOnlyCollection<string> PrefilterSecurityCodesForBaseAsset(
+            IReadOnlyCollection<string> securityCodes,
+            LiveOptionBoardLoadTestSettings settings)
+        {
+            if (string.IsNullOrWhiteSpace(settings.BaseAssetSecCode))
+            {
+                return securityCodes;
+            }
+
+            var filtered = securityCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Where(code => code.StartsWith(settings.BaseAssetSecCode, StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (filtered.Length > 0)
+            {
+                Log.Information(
+                    "Live load: prefiltered security codes by prefix {BaseAssetSecCode}: {FilteredCount} из {TotalCount}",
+                    settings.BaseAssetSecCode,
+                    filtered.Length,
+                    securityCodes.Count);
+                return filtered;
+            }
+
+            Log.Warning(
+                "Live load: prefilter by prefix {BaseAssetSecCode} returned 0 codes, fallback to full class list of {TotalCount}",
+                settings.BaseAssetSecCode,
+                securityCodes.Count);
+            return securityCodes;
+        }
+
+        private static int ResolveEffectiveExpirationDate(LiveOptionBoardLoadTestSettings settings)
+        {
+            if (settings.ExpirationDate > 0)
+            {
+                return settings.ExpirationDate;
+            }
+
+            var today = DateOnly.FromDateTime(DateTime.Now);
+            var dayOffset = ((int)DayOfWeek.Thursday - (int)today.DayOfWeek + 7) % 7;
+            var nextThursday = today.AddDays(dayOffset);
+            var expirationDate = int.Parse(nextThursday.ToString("yyyyMMdd"));
+
+            Log.Information("Live load: expiration is not configured, using nearest Thursday {ExpirationDate}", expirationDate);
+            return expirationDate;
+        }
     private static async Task<IReadOnlyCollection<QuoteParamSubscription>> SubscribeToBoardParamsAsync(
         QuikBridge client,
         LiveOptionBoardLoadTestSettings settings,
