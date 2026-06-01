@@ -1,8 +1,13 @@
-﻿using Microsoft.Extensions.Configuration;
+﻿using System.Collections.Concurrent;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using QuikBridgeNet;
 using QuikBridgeNet.Helpers;
+using QuikBridgeNetApp;
+using QuikBridgeNetDomain;
 using QuikBridgeNetDomain.Entities;
+using QuikBridgeNetEvents;
+using QuikBridgeNetEvents.Events;
 using Serilog;
 
 class Program
@@ -13,6 +18,7 @@ class Program
             .SetBasePath(Directory.GetCurrentDirectory())
             .AddJsonFile("appsettings.json", false, true);
         var configuration = builder.Build();
+        var liveLoadTestSettings = configuration.GetSection("LiveOptionBoardLoadTest").Get<LiveOptionBoardLoadTestSettings>() ?? new LiveOptionBoardLoadTestSettings();
 
         var serviceCollection = new ServiceCollection();
         QuikBridgeServiceConfiguration.ConfigureServices(serviceCollection, configuration);
@@ -45,22 +51,30 @@ class Program
         
         var globalEventAggregator = serviceProvider.GetRequiredService<QuikBridgeNetEvents.QuikBridgeEventAggregator>();
 
-        RegisterMarketDataHandlers(globalEventAggregator, client);
+        RegisterMarketDataHandlers(globalEventAggregator, client, enableVerboseParameterLogging: !liveLoadTestSettings.Enabled);
         RegisterAccountStateHandlers(globalEventAggregator);
 
         await client.StartAsync(cts.Token);
 
-        var subscriptionToken = await RunMarketDataExample(client, classCode, secCode, paramName);
-        await RunAccountStateExample(client, firmId, clientCode, moneyTag, accountPositionAccount, futuresAccount, secCode, moneyCurrencyCode);
+        if (liveLoadTestSettings.Enabled)
+        {
+            await RunLiveOptionBoardLoadTest(client, globalEventAggregator, liveLoadTestSettings, cts.Token);
+        }
+        else
+        {
+            var subscriptionToken = await RunMarketDataExample(client, classCode, secCode, paramName);
+            await RunAccountStateExample(client, firmId, clientCode, moneyTag, accountPositionAccount, futuresAccount, secCode, moneyCurrencyCode);
 
-        Console.WriteLine("Press any key to stop...");
-        Console.ReadKey();
-        await client.UnsubscribeToQuotesTableParams(classCode, secCode, paramName, subscriptionToken);
+            Console.WriteLine("Press any key to stop...");
+            Console.ReadKey();
+            await client.UnsubscribeToQuotesTableParams(classCode, secCode, paramName, subscriptionToken);
+        }
+
         client.Finish();
         await Log.CloseAndFlushAsync();
     }
 
-    private static void RegisterMarketDataHandlers(QuikBridgeNetEvents.QuikBridgeEventAggregator globalEventAggregator, QuikBridge client)
+    private static void RegisterMarketDataHandlers(QuikBridgeNetEvents.QuikBridgeEventAggregator globalEventAggregator, QuikBridge client, bool enableVerboseParameterLogging)
     {
         globalEventAggregator.SubscribeToInstrumentClassesUpdate( (eventObj) =>
         {
@@ -92,7 +106,11 @@ class Program
 
         globalEventAggregator.SubscribeToInstrumentParameterUpdate( eventArgs =>
         {
-            Log.Information("Instrument parameter {Name} current value {Val} ", eventArgs.ParamName, eventArgs.ParamValue);
+            if (enableVerboseParameterLogging)
+            {
+                Log.Information("Instrument parameter {Name} current value {Val} ", eventArgs.ParamName, eventArgs.ParamValue);
+            }
+
             return Task.CompletedTask;
         });
 
@@ -211,8 +229,310 @@ class Program
         }
     }
 
+    private static async Task RunLiveOptionBoardLoadTest(
+        QuikBridge client,
+        QuikBridgeEventAggregator eventAggregator,
+        LiveOptionBoardLoadTestSettings settings,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(settings.OptionClassCode) || string.IsNullOrWhiteSpace(settings.BaseAssetSecCode))
+        {
+            Log.Warning("LiveOptionBoardLoadTest включён, но не заданы OptionClassCode/BaseAssetSecCode. Сценарий пропущен.");
+            return;
+        }
+
+        var paramNames = settings.ParamNames
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (paramNames.Length == 0)
+        {
+            Log.Warning("LiveOptionBoardLoadTest включён без ParamNames. Сценарий пропущен.");
+            return;
+        }
+
+        if (settings.StartupDelayMs > 0)
+        {
+            await Task.Delay(settings.StartupDelayMs, cancellationToken);
+        }
+
+        var optionSecCodes = await LoadClassSecuritiesAsync(client, eventAggregator, settings, cancellationToken);
+        if (optionSecCodes.Count == 0)
+        {
+            Log.Warning("Не удалось получить список инструментов для класса {OptionClassCode}", settings.OptionClassCode);
+            return;
+        }
+
+        var contracts = await LoadSecurityContractsAsync(client, eventAggregator, settings, optionSecCodes, cancellationToken);
+        var filteredContracts = FilterOptionContracts(contracts, settings);
+        if (filteredContracts.Count == 0)
+        {
+            Log.Warning(
+                "Не найдено опционов для базового актива {BaseAssetSecCode} и серии {ExpirationDate} в классе {OptionClassCode}",
+                settings.BaseAssetSecCode,
+                settings.ExpirationDate,
+                settings.OptionClassCode);
+            return;
+        }
+
+        Log.Information(
+            "Старт нагрузки: найдено {ContractsCount} инструментов, параметров на инструмент {ParamCount}, итоговых подписок {SubscriptionCount}",
+            filteredContracts.Count,
+            paramNames.Length,
+            filteredContracts.Count * paramNames.Length);
+
+        var selectedSecCodes = filteredContracts
+            .Select(contract => contract.sec_code)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var totalUpdates = 0L;
+        var updatesByParam = new ConcurrentDictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        var updatedSecurities = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+
+        using var eventSubscription = eventAggregator.Subscribe<InstrumentParametersUpdateEvent>(args =>
+        {
+            if (string.IsNullOrWhiteSpace(args.SecCode) || string.IsNullOrWhiteSpace(args.ParamName))
+            {
+                return Task.CompletedTask;
+            }
+
+            if (!selectedSecCodes.Contains(args.SecCode) || !paramNames.Contains(args.ParamName, StringComparer.OrdinalIgnoreCase))
+            {
+                return Task.CompletedTask;
+            }
+
+            Interlocked.Increment(ref totalUpdates);
+            updatesByParam.AddOrUpdate(args.ParamName, 1, (_, current) => current + 1);
+            updatedSecurities.TryAdd(args.SecCode, 0);
+            return Task.CompletedTask;
+        });
+
+        using var monitorCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var monitorTask = Task.Run(
+            () => MonitorLiveLoadAsync(settings, totalUpdates: () => Interlocked.Read(ref totalUpdates), updatesByParam, updatedSecurities, selectedSecCodes.Count, monitorCancellation.Token),
+            monitorCancellation.Token);
+
+        var subscriptions = await SubscribeToBoardParamsAsync(client, settings, filteredContracts, paramNames, cancellationToken);
+
+        Console.WriteLine("Live option-board load test is running. Press any key to stop...");
+        Console.ReadKey();
+
+        monitorCancellation.Cancel();
+        try
+        {
+            await monitorTask;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        await UnsubscribeBoardParamsAsync(client, settings, subscriptions, cancellationToken);
+
+        Log.Information(
+            "Live load test finished: totalUpdates={TotalUpdates}, updatedSecurities={UpdatedSecurities}/{TotalSecurities}",
+            Interlocked.Read(ref totalUpdates),
+            updatedSecurities.Count,
+            selectedSecCodes.Count);
+    }
+
+    private static async Task<IReadOnlyCollection<string>> LoadClassSecuritiesAsync(
+        QuikBridge client,
+        QuikBridgeEventAggregator eventAggregator,
+        LiveOptionBoardLoadTestSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var completion = new TaskCompletionSource<IReadOnlyCollection<string>>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var subscription = eventAggregator.Subscribe<InstrumentClassesUpdateEvent>(args =>
+        {
+            if (args.InstrumentClassType == QuikDataType.SecCode)
+            {
+                completion.TrySetResult(args.InstrumentClasses.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            }
+
+            return Task.CompletedTask;
+        });
+
+        await client.GetClassSecurities(settings.OptionClassCode);
+
+        try
+        {
+            return await completion.Task.WaitAsync(TimeSpan.FromSeconds(settings.DiscoveryTimeoutSeconds), cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            Log.Warning("Не дождались списка инструментов для класса {OptionClassCode} за {TimeoutSeconds} сек.", settings.OptionClassCode, settings.DiscoveryTimeoutSeconds);
+            return [];
+        }
+    }
+
+    private static async Task<IReadOnlyCollection<SecurityContract>> LoadSecurityContractsAsync(
+        QuikBridge client,
+        QuikBridgeEventAggregator eventAggregator,
+        LiveOptionBoardLoadTestSettings settings,
+        IReadOnlyCollection<string> securityCodes,
+        CancellationToken cancellationToken)
+    {
+        var expectedCodes = securityCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var contracts = new ConcurrentDictionary<string, SecurityContract>(StringComparer.OrdinalIgnoreCase);
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var subscription = eventAggregator.Subscribe<SecurityContractArrivedEvent>(args =>
+        {
+            var contract = args.Contract;
+            if (contract == null || !expectedCodes.Contains(contract.sec_code))
+            {
+                return Task.CompletedTask;
+            }
+
+            contracts.TryAdd(contract.sec_code, contract);
+            if (contracts.Count >= expectedCodes.Count)
+            {
+                completion.TrySetResult();
+            }
+
+            return Task.CompletedTask;
+        });
+
+        foreach (var securityCode in securityCodes)
+        {
+            await client.GetSecurityInfo(settings.OptionClassCode, securityCode);
+        }
+
+        try
+        {
+            await completion.Task.WaitAsync(TimeSpan.FromSeconds(settings.DiscoveryTimeoutSeconds), cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            Log.Warning(
+                "Не дождались всех security info за {TimeoutSeconds} сек. Получено {ReceivedCount} из {ExpectedCount}.",
+                settings.DiscoveryTimeoutSeconds,
+                contracts.Count,
+                expectedCodes.Count);
+        }
+
+        return contracts.Values.ToArray();
+    }
+
+    private static IReadOnlyCollection<SecurityContract> FilterOptionContracts(
+        IReadOnlyCollection<SecurityContract> contracts,
+        LiveOptionBoardLoadTestSettings settings)
+    {
+        IEnumerable<SecurityContract> filtered = contracts
+            .Where(contract => string.Equals(contract.class_code, settings.OptionClassCode, StringComparison.OrdinalIgnoreCase))
+            .Where(contract => string.Equals(contract.base_active_seccode, settings.BaseAssetSecCode, StringComparison.OrdinalIgnoreCase))
+            .Where(contract => string.IsNullOrWhiteSpace(settings.BaseAssetClassCode) || string.Equals(contract.base_active_classcode, settings.BaseAssetClassCode, StringComparison.OrdinalIgnoreCase))
+            .Where(contract => settings.ExpirationDate <= 0 || contract.exp_date == settings.ExpirationDate)
+            .OrderBy(contract => contract.option_strike)
+            .ThenBy(contract => contract.sec_code, StringComparer.OrdinalIgnoreCase);
+
+        if (settings.MaxInstruments > 0)
+        {
+            filtered = filtered.Take(settings.MaxInstruments);
+        }
+
+        return filtered.ToArray();
+    }
+
+    private static async Task<IReadOnlyCollection<QuoteParamSubscription>> SubscribeToBoardParamsAsync(
+        QuikBridge client,
+        LiveOptionBoardLoadTestSettings settings,
+        IReadOnlyCollection<SecurityContract> contracts,
+        IReadOnlyCollection<string> paramNames,
+        CancellationToken cancellationToken)
+    {
+        var subscriptions = new ConcurrentBag<QuoteParamSubscription>();
+        var failures = new ConcurrentBag<string>();
+
+        await Parallel.ForEachAsync(
+            contracts,
+            new ParallelOptions
+            {
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = Math.Max(1, settings.SubscriptionParallelism)
+            },
+            async (contract, ct) =>
+            {
+                foreach (var paramName in paramNames)
+                {
+                    try
+                    {
+                        var token = await client.SubscribeToQuotesTableParams(settings.OptionClassCode, contract.sec_code, paramName);
+                        subscriptions.Add(new QuoteParamSubscription(settings.OptionClassCode, contract.sec_code, paramName, token));
+                    }
+                    catch (Exception ex)
+                    {
+                        failures.Add($"{contract.sec_code}:{paramName}:{ex.Message}");
+                    }
+                }
+            });
+
+        if (!failures.IsEmpty)
+        {
+            Log.Warning("Во время подписки на доску опционов возникли ошибки: {FailureCount}", failures.Count);
+            foreach (var failure in failures.Take(10))
+            {
+                Log.Warning("Subscribe failure: {Failure}", failure);
+            }
+        }
+
+        Log.Information("Оформлено локальных подписок: {SubscriptionCount}", subscriptions.Count);
+        return subscriptions.ToArray();
+    }
+
+    private static async Task UnsubscribeBoardParamsAsync(
+        QuikBridge client,
+        LiveOptionBoardLoadTestSettings settings,
+        IReadOnlyCollection<QuoteParamSubscription> subscriptions,
+        CancellationToken cancellationToken)
+    {
+        await Parallel.ForEachAsync(
+            subscriptions,
+            new ParallelOptions
+            {
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = Math.Max(1, settings.UnsubscribeParallelism)
+            },
+            async (subscription, ct) =>
+            {
+                try
+                {
+                    await client.UnsubscribeToQuotesTableParams(subscription.ClassCode, subscription.SecCode, subscription.ParamName, subscription.Token);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Не удалось снять подписку {ClassCode}:{SecCode}:{ParamName}", subscription.ClassCode, subscription.SecCode, subscription.ParamName);
+                }
+            });
+    }
+
+    private static async Task MonitorLiveLoadAsync(
+        LiveOptionBoardLoadTestSettings settings,
+        Func<long> totalUpdates,
+        ConcurrentDictionary<string, long> updatesByParam,
+        ConcurrentDictionary<string, byte> updatedSecurities,
+        int totalSecurities,
+        CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(Math.Max(1, settings.StatusIntervalSeconds)));
+
+        while (await timer.WaitForNextTickAsync(cancellationToken))
+        {
+            var paramStats = string.Join(", ", updatesByParam.OrderBy(entry => entry.Key).Select(entry => $"{entry.Key}={entry.Value}"));
+            Log.Information(
+                "Load status: totalUpdates={TotalUpdates}, updatedSecurities={UpdatedSecurities}/{TotalSecurities}, perParam=[{PerParam}]",
+                totalUpdates(),
+                updatedSecurities.Count,
+                totalSecurities,
+                paramStats);
+        }
+    }
+
     static void OnBridgeConnectionStateChanged(QuikBridgeConnectionState newState)
     {
         Log.Information($"Изменилось состояние подключения моста на {newState.GetDescription()}");
     }
+
+    private readonly record struct QuoteParamSubscription(string ClassCode, string SecCode, string ParamName, Guid Token);
 }
