@@ -16,14 +16,14 @@ public class RespArrivedEventHandler(
 {
     private readonly bool _isExtendedLogging = bridgeConfig.UseExtendedLogging;
 
-    public Task HandleAsync(RespArrivedEvent domainEvent)
+    public async Task HandleAsync(RespArrivedEvent domainEvent)
     {
         var msg = domainEvent.Req;
         if (_isExtendedLogging)
             Log.Debug("resp arrived with message id {0}", msg.id);
         
-        if (!messageRegistry.TryGetMetadata(msg.id, out var newMessage)) return Task.CompletedTask;
-        if (newMessage == null) return Task.CompletedTask;
+        if (!messageRegistry.TryGetMetadata(msg.id, out var newMessage)) return;
+        if (newMessage == null) return;
         if (_isExtendedLogging) Log.Debug("resp method is {0}", newMessage.Method);
         
         try
@@ -41,7 +41,7 @@ public class RespArrivedEventHandler(
                             classes.AddRange(cl);
                         }
                     }
-                    _ = globalEventAggregator.RaiseEvent(new InstrumentClassesUpdateEvent() {InstrumentClasses = classes, InstrumentClassType = QuikDataType.ClassCode});
+                    await globalEventAggregator.RaiseEvent(new InstrumentClassesUpdateEvent() {InstrumentClasses = classes, InstrumentClassType = QuikDataType.ClassCode});
                     break;
                 case MessageType.Securities:
                     List<string> tickers = new();
@@ -54,11 +54,12 @@ public class RespArrivedEventHandler(
                             tickers.AddRange(cl);
                         }
                     }
-                    _ = globalEventAggregator.RaiseEvent(new InstrumentClassesUpdateEvent()
+                    await globalEventAggregator.RaiseEvent(new InstrumentClassesUpdateEvent()
                     {
                         InstrumentClasses = tickers,
                         InstrumentClassType = QuikDataType.SecCode
                     });
+                    
                     break;
                 case MessageType.SecurityContract:
                     var contractResultToken = domainEvent.Req.body?["result"] ?? null;
@@ -77,7 +78,7 @@ public class RespArrivedEventHandler(
                         {
                             foreach (var t in contracts)
                             {
-                                _ = globalEventAggregator.RaiseEvent(new SecurityContractArrivedEvent() { Contract = t});
+                                await globalEventAggregator.RaiseEvent(new SecurityContractArrivedEvent() { Contract = t});
                             }
                         }
                     }
@@ -95,7 +96,7 @@ public class RespArrivedEventHandler(
                         var valueToken = jArray[0]["param_value"];
                         var value = valueToken?.ToString();
                         
-                        _ = globalEventAggregator.RaiseEvent(new InstrumentParametersUpdateEvent()
+                        await globalEventAggregator.RaiseEvent(new InstrumentParametersUpdateEvent()
                         {
                             SecCode = newMessage.Ticker, ClassCode = newMessage.ClassCode, ParamName = newMessage.ParamName, ParamValue = value
                         });
@@ -109,7 +110,7 @@ public class RespArrivedEventHandler(
                         var orderBook = orderBookToken.ToObject<OrderBook>();
                         if (orderBook != null)
                         {
-                            _ = globalEventAggregator.RaiseEvent(new OrderBookUpdateEvent() {
+                            await globalEventAggregator.RaiseEvent(new OrderBookUpdateEvent() {
                                 SecCode = newMessage.Ticker,ClassCode = newMessage.ClassCode, OrderBook = orderBook
                             });
                         }
@@ -122,7 +123,7 @@ public class RespArrivedEventHandler(
                         var accountPosition = accountPositionArray[0].ToObject<AccountPosition>();
                         if (accountPosition != null)
                         {
-                            _ = globalEventAggregator.RaiseEvent(new AccountPositionArrivedEvent() { Position = accountPosition });
+                            await globalEventAggregator.RaiseEvent(new AccountPositionArrivedEvent() { Position = accountPosition });
                         }
                     }
                     break;
@@ -133,7 +134,7 @@ public class RespArrivedEventHandler(
                         var moneyPosition = moneyPositionArray[0].ToObject<MoneyPosition>();
                         if (moneyPosition != null)
                         {
-                            _ = globalEventAggregator.RaiseEvent(new MoneyPositionArrivedEvent() { Position = moneyPosition });
+                            await globalEventAggregator.RaiseEvent(new MoneyPositionArrivedEvent() { Position = moneyPosition });
                         }
                     }
                     break;
@@ -144,7 +145,7 @@ public class RespArrivedEventHandler(
                         var futuresHolding = futuresHoldingArray[0].ToObject<FuturesHolding>();
                         if (futuresHolding != null)
                         {
-                            _ = globalEventAggregator.RaiseEvent(new FuturesHoldingArrivedEvent() { Holding = futuresHolding });
+                            await globalEventAggregator.RaiseEvent(new FuturesHoldingArrivedEvent() { Holding = futuresHolding });
                         }
                     }
                     break;
@@ -155,12 +156,12 @@ public class RespArrivedEventHandler(
                         var futuresLimit = futuresLimitArray[0].ToObject<FuturesLimit>();
                         if (futuresLimit != null)
                         {
-                            _ = globalEventAggregator.RaiseEvent(new FuturesLimitArrivedEvent() { Limit = futuresLimit });
+                            await globalEventAggregator.RaiseEvent(new FuturesLimitArrivedEvent() { Limit = futuresLimit });
                         }
                     }
                     break;
                 default:
-                    _ = globalEventAggregator.RaiseEvent(new ServiceMessageArrivedEvent() {Response = msg, BridgeMessage = newMessage});
+                    await globalEventAggregator.RaiseEvent(new ServiceMessageArrivedEvent() {Response = msg, BridgeMessage = newMessage});
                     break;
             }
         }
@@ -168,7 +169,5 @@ public class RespArrivedEventHandler(
         {
             messageRegistry.RemoveMessage(msg.id);
         }
-        
-        return Task.CompletedTask;
     }
 }

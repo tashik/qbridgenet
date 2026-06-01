@@ -8,6 +8,8 @@ internal class QuikBridgeSubscriptionManager
     {
         public SemaphoreSlim SyncRoot { get; } = new(1, 1);
         public HashSet<Guid> Tokens { get; } = [];
+        public int TokenCount { get; set; }
+        public bool IsRemoteActive { get; set; }
     }
 
     internal class SubscriptionEntry
@@ -24,9 +26,10 @@ internal class QuikBridgeSubscriptionManager
 
         try
         {
-            if (state.Tokens.Count == 0)
+            if (state.TokenCount == 0 || !state.IsRemoteActive)
             {
                 await subscribeAsync();
+                state.IsRemoteActive = true;
             }
 
             var entry = new SubscriptionEntry
@@ -35,12 +38,13 @@ internal class QuikBridgeSubscriptionManager
             };
 
             state.Tokens.Add(entry.SubscriptionToken);
+            state.TokenCount = state.Tokens.Count;
 
             return entry;
         }
         catch
         {
-            if (state.Tokens.Count == 0)
+            if (state.TokenCount == 0)
             {
                 _subscriptions.TryRemove(new KeyValuePair<string, SubscriptionState>(key, state));
             }
@@ -69,20 +73,30 @@ internal class QuikBridgeSubscriptionManager
                 return 0;
             }
 
-            if (state.Tokens.Count > 0)
+            state.TokenCount = state.Tokens.Count;
+
+            if (state.TokenCount > 0)
             {
+                return 0;
+            }
+
+            if (!state.IsRemoteActive)
+            {
+                _subscriptions.TryRemove(new KeyValuePair<string, SubscriptionState>(key, state));
                 return 0;
             }
 
             try
             {
                 var messageId = await unsubscribeAsync();
+                state.IsRemoteActive = false;
                 _subscriptions.TryRemove(new KeyValuePair<string, SubscriptionState>(key, state));
                 return messageId;
             }
             catch
             {
                 state.Tokens.Add(token);
+                state.TokenCount = state.Tokens.Count;
                 throw;
             }
         }
@@ -94,6 +108,40 @@ internal class QuikBridgeSubscriptionManager
 
     public bool HasSubscribers(string key)
     {
-        return _subscriptions.TryGetValue(key, out var state) && state.Tokens.Count > 0;
+        return _subscriptions.TryGetValue(key, out var state) && state.TokenCount > 0;
+    }
+
+    public async Task<int> RestoreAsync(string key, Func<Task<int>> subscribeAsync)
+    {
+        if (!_subscriptions.TryGetValue(key, out var state))
+        {
+            return 0;
+        }
+
+        await state.SyncRoot.WaitAsync();
+
+        try
+        {
+            if (state.TokenCount == 0 || state.IsRemoteActive)
+            {
+                return 0;
+            }
+
+            var messageId = await subscribeAsync();
+            state.IsRemoteActive = true;
+            return messageId;
+        }
+        finally
+        {
+            state.SyncRoot.Release();
+        }
+    }
+
+    public void InvalidateRemoteState()
+    {
+        foreach (var subscription in _subscriptions.Values)
+        {
+            subscription.IsRemoteActive = false;
+        }
     }
 }

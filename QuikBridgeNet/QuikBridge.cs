@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Threading;
 using Newtonsoft.Json;
 using QuikBridgeNet.Entities.CommandData;
 using QuikBridgeNet.Entities.MessageMeta;
@@ -31,6 +32,10 @@ public class QuikBridge(
     private readonly QuikBridgeCallbackRegistry<MessageType> _globalCallbackRegistry = new();
 
     private readonly ConcurrentDictionary<string, object> _dataSources = new();
+    private readonly ConcurrentDictionary<string, SessionResourceDefinition> _sessionResources = new();
+    private QuikBridgeSessionCoordinator? _sessionCoordinator;
+    private QuikBridgeRequestExpiryController? _requestExpiryController;
+    private int _internalServiceHandlerRegistered;
 
     private QuikBridgeConnectionState _connectionState = QuikBridgeConnectionState.Disconnected;
 
@@ -39,6 +44,20 @@ public class QuikBridge(
     #endregion
     
     #region Properties
+
+    private QuikBridgeSessionCoordinator SessionCoordinator => _sessionCoordinator ??= new QuikBridgeSessionCoordinator(
+        msgRegistry,
+        eventAggregator,
+        _subscriptionManager,
+        _datasourceManager,
+        _globalCallbackRegistry,
+        _dataSources,
+        _sessionResources);
+
+    private QuikBridgeRequestExpiryController RequestExpiryController => _requestExpiryController ??= new QuikBridgeRequestExpiryController(
+        msgRegistry,
+        eventAggregator,
+        bridgeConfig);
 
     /// <summary>
     /// Включает расширенное логирование протокола для диагностики.
@@ -60,21 +79,7 @@ public class QuikBridge(
     public QuikBridgeConnectionState ConnectionState
     {
         get => _connectionState;
-        set
-        {
-            if (value == _connectionState) return;
-            if (value == QuikBridgeConnectionState.Error)
-            {
-                OnConnectionStateChanged(value);
-                _connectionState = QuikBridgeConnectionState.Disconnected;
-            }
-            else
-            {
-                _connectionState = value;
-            }
-            
-            OnConnectionStateChanged(_connectionState);
-        }
+        set => SetPublicConnectionState(value);
     }
     
     #endregion
@@ -87,52 +92,94 @@ public class QuikBridge(
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (ConnectionState != QuikBridgeConnectionState.Disconnected) return;
+
+        await StopRequestExpiryLoopAsync();
         
-        ConnectionState = QuikBridgeConnectionState.Pending;
+        EnterPendingState();
         var isConnectionEstablished = await protocolHandler.StartClientAsync(bridgeConfig.Host, bridgeConfig.Port, cancellationToken);
         
         if (isConnectionEstablished)
         {
-            ConnectionState = QuikBridgeConnectionState.Connected;
-            eventAggregator.SubscribeToServiceMessages(async (resp) =>
-            {
-                var registeredReq = resp.BridgeMessage;
-                if (registeredReq == null) return;
-                if (registeredReq.MessageType == MessageType.Datasource) {
-                    var result = resp.Response?.body?["result"]?.ToObject<List<int>>();
-                    if (result != null)
-                    {
-                        foreach (var r in result)
-                        {
-                            var dsName = BuildDatasourceName(registeredReq.Ticker, registeredReq.Interval);
-                            _dataSources[dsName] = r;
-                            if (IsExtendedLogging)
-                                Log.Debug("DataSource with name {dsName} has been created; callback is set up", dsName);
-                            await SetDsUpdateCallback(r, dsName);
-
-                            var closeMessageId = await _datasourceManager.MarkReadyAsync(dsName, () => CloseDatasourceInternal(dsName, r));
-                            if (closeMessageId == 0 && _datasourceManager.HasConsumers(dsName))
-                            {
-                                _ = eventAggregator.RaiseEvent(new DataSourceSetEvent() {DataSourceName = dsName, BridgeMessage = registeredReq});
-                            }
-                        }
-                    }
-                }/* else if (registeredReq.MessageType == MessageType.OrderBookInit)
-                {
-                    var result = resp.body?["result"]?.ToObject<List<bool>>();
-                    if (result is { Count: > 0 } && result[0])
-                    {
-                        await GetOrderBookSnapshot(registeredReq.ClassCode, registeredReq.Ticker);
-                        await DoSubscribeToOrderBook(registeredReq.ClassCode, registeredReq.Ticker);
-                    }
-                }*/
-            });
+            EnterConnectedState();
+            EnsureInternalServiceHandlerRegistered();
+            StartRequestExpiryLoop();
             await SetupCallbacks();
+            await RestoreSessionStateAsync();
         }
         else
         {
-            ConnectionState = QuikBridgeConnectionState.Error;
+            TransitionToErrorState();
         }
+    }
+
+    internal async Task HandleConnectionLostAsync()
+    {
+        await StopRequestExpiryLoopAsync();
+        SessionCoordinator.InvalidateRemoteState();
+        TransitionToErrorState();
+    }
+
+    private void SetPublicConnectionState(QuikBridgeConnectionState newState)
+    {
+        if (newState == QuikBridgeConnectionState.Error)
+        {
+            TransitionToErrorState();
+            return;
+        }
+
+        SetConnectionState(newState);
+    }
+
+    private void EnterPendingState()
+    {
+        SetConnectionState(QuikBridgeConnectionState.Pending);
+    }
+
+    private void EnterConnectedState()
+    {
+        SetConnectionState(QuikBridgeConnectionState.Connected);
+    }
+
+    private void EnterDisconnectedState(bool forceNotification = false)
+    {
+        SetConnectionState(QuikBridgeConnectionState.Disconnected, forceNotification);
+    }
+
+    private void TransitionToErrorState()
+    {
+        OnConnectionStateChanged(QuikBridgeConnectionState.Error);
+        EnterDisconnectedState(forceNotification: true);
+    }
+
+    private void SetConnectionState(QuikBridgeConnectionState newState, bool forceNotification = false)
+    {
+        if (!forceNotification && newState == _connectionState)
+        {
+            return;
+        }
+
+        _connectionState = newState;
+        OnConnectionStateChanged(_connectionState);
+    }
+
+    private void StartRequestExpiryLoop()
+    {
+        RequestExpiryController.Start();
+    }
+
+    private async Task ExpirePendingRequestsAsync()
+    {
+        await RequestExpiryController.ExpirePendingRequestsAsync();
+    }
+
+    private async Task StopRequestExpiryLoopAsync()
+    {
+        if (_requestExpiryController == null)
+        {
+            return;
+        }
+
+        await _requestExpiryController.StopAsync();
     }
 
     private async Task SetupCallbacks()
@@ -141,6 +188,83 @@ public class QuikBridge(
         foreach (var cb in callbacks)
         {
             await SetGlobalCallback(cb);
+        }
+    }
+
+    /// <summary>
+    /// Повторно регистрирует удалённое session-scoped состояние после реконнекта.
+    /// </summary>
+    public async Task RestoreSessionStateAsync()
+    {
+        if (ConnectionState != QuikBridgeConnectionState.Connected)
+        {
+            return;
+        }
+
+        await SessionCoordinator.RestoreAsync(
+            SetGlobalCallback,
+            DoSubscribeToOrderBook,
+            DoSubscribeToQuotesTableParams,
+            CreateDatasourceInternal);
+    }
+
+    private void EnsureInternalServiceHandlerRegistered()
+    {
+        if (Interlocked.Exchange(ref _internalServiceHandlerRegistered, 1) == 1)
+        {
+            return;
+        }
+
+        eventAggregator.SubscribeToServiceMessages(HandleInternalServiceMessageAsync);
+    }
+
+    private async Task HandleInternalServiceMessageAsync(ServiceMessageArrivedEvent serviceMessage)
+    {
+        var registeredReq = serviceMessage.BridgeMessage;
+        if (registeredReq == null || registeredReq.MessageType != MessageType.Datasource)
+        {
+            return;
+        }
+
+        var datasourceIds = serviceMessage.Response?.body?["result"]?.ToObject<List<int>>();
+        if (datasourceIds == null)
+        {
+            return;
+        }
+
+        foreach (var datasourceId in datasourceIds)
+        {
+            await RegisterDatasourceHandleAsync(registeredReq, datasourceId);
+        }
+    }
+
+    private async Task RegisterDatasourceHandleAsync(QMessage registeredReq, int datasourceId)
+    {
+        var datasourceName = BuildDatasourceName(registeredReq.Ticker, registeredReq.Interval);
+        _dataSources[datasourceName] = datasourceId;
+
+        if (IsExtendedLogging)
+        {
+            Log.Debug("DataSource with name {DatasourceName} has been created; callback is set up", datasourceName);
+        }
+
+        await SetDsUpdateCallback(datasourceId, datasourceName);
+        await FinalizeDatasourceReadyAsync(datasourceName, datasourceId, registeredReq);
+    }
+
+    private async Task FinalizeDatasourceReadyAsync(string datasourceName, int datasourceId, QMessage registeredReq)
+    {
+        var closeMessageId = await _datasourceManager.MarkReadyAsync(
+            datasourceName,
+            () => CloseDatasourceInternal(datasourceName, datasourceId));
+
+        if (closeMessageId == 0 && _datasourceManager.HasConsumers(datasourceName))
+        {
+            await eventAggregator.RaiseEvent(new DataSourceSetEvent
+            {
+                DataSourceName = datasourceName,
+                BridgeMessage = registeredReq
+            });
         }
     }
     
@@ -164,16 +288,24 @@ public class QuikBridge(
         }
 
         RegisterRequest(msgId, method, metaData);
-        var msg = new JsonReqMessage()
+        try
         {
-            id = msgId,
-            type = MessageType.Req.GetDescription(),
-            data = reqData ?? data
-        };
-        await protocolHandler.SendReqAsync(msg, preprocessArguments);
-        if (IsExtendedLogging)
-            Log.Debug($"New message id: {msgId}");
-        return msgId;
+            var msg = new JsonReqMessage()
+            {
+                id = msgId,
+                type = MessageType.Req.GetDescription(),
+                data = reqData ?? data
+            };
+            await protocolHandler.SendReqAsync(msg, preprocessArguments);
+            if (IsExtendedLogging)
+                Log.Debug($"New message id: {msgId}");
+            return msgId;
+        }
+        catch
+        {
+            msgRegistry.RemoveMessage(msgId);
+            throw;
+        }
     }
 
     /// <summary>
@@ -181,11 +313,7 @@ public class QuikBridge(
     /// </summary>
     public async Task<int> GetClassesList()
     {
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            function = "getClassesList"
-        };
+        var data = QuikCommandFactory.CreateInvoke("getClassesList");
         return await SendRequest(data, new MetaData() { MessageType = MessageType.Classes });
     }
     
@@ -194,13 +322,7 @@ public class QuikBridge(
     /// </summary>
     public async Task<int> GetClassSecurities(string classCode)
     {
-        string[] args = {"\"" + classCode + "\""};
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            function = "getClassSecurities",
-            arguments = args
-        };
+        var data = QuikCommandFactory.CreateInvoke("getClassSecurities", QuikCommandFactory.CreateQuotedArguments(classCode));
         return await SendRequest(data, new ClassCode() { MessageType = MessageType.Securities, InstrumentClass = classCode }, false);
     }
     
@@ -209,13 +331,7 @@ public class QuikBridge(
     /// </summary>
     public async Task<int> GetSecurityInfo(string classCode, string secCode)
     {
-        string[] args = {"\"" + classCode + "\",\"" + secCode + "\""};
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            function = "getSecurityInfo",
-            arguments = args
-        };
+        var data = QuikCommandFactory.CreateInvoke("getSecurityInfo", QuikCommandFactory.CreateQuotedArguments(classCode, secCode));
         return await SendRequest(data, new Subscription() { MessageType = MessageType.SecurityContract, InstrumentClass = classCode, Ticker = secCode}, false);
     }
 
@@ -224,13 +340,9 @@ public class QuikBridge(
     /// </summary>
     public async Task<int> GetAccountPosition(string firmId, string clientCode, string secCode, string account, int limitKind)
     {
-        string[] args = {$"\"{firmId}\",\"{clientCode}\",\"{secCode}\",\"{account}\",{limitKind}"};
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            function = MessageType.AccountPosition.GetDescription(),
-            arguments = args
-        };
+        var data = QuikCommandFactory.CreateInvoke(
+            MessageType.AccountPosition.GetDescription(),
+            QuikCommandFactory.CreateMixedArguments(firmId, clientCode, secCode, account, limitKind));
         var metaData = new AccountPositionRequest()
         {
             MessageType = MessageType.AccountPosition,
@@ -248,13 +360,9 @@ public class QuikBridge(
     /// </summary>
     public async Task<int> GetMoneyPosition(string firmId, string clientCode, string tag, string currencyCode, int limitKind)
     {
-        string[] args = {$"\"{firmId}\",\"{clientCode}\",\"{tag}\",\"{currencyCode}\",{limitKind}"};
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            function = MessageType.MoneyPosition.GetDescription(),
-            arguments = args
-        };
+        var data = QuikCommandFactory.CreateInvoke(
+            MessageType.MoneyPosition.GetDescription(),
+            QuikCommandFactory.CreateMixedArguments(firmId, clientCode, tag, currencyCode, limitKind));
         var metaData = new MoneyPositionRequest()
         {
             MessageType = MessageType.MoneyPosition,
@@ -272,13 +380,9 @@ public class QuikBridge(
     /// </summary>
     public async Task<int> GetFuturesHolding(string firmId, string account, string secCode, int positionType)
     {
-        string[] args = {$"\"{firmId}\",\"{account}\",\"{secCode}\",{positionType}"};
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            function = MessageType.FuturesHolding.GetDescription(),
-            arguments = args
-        };
+        var data = QuikCommandFactory.CreateInvoke(
+            MessageType.FuturesHolding.GetDescription(),
+            QuikCommandFactory.CreateMixedArguments(firmId, account, secCode, positionType));
         var metaData = new FuturesHoldingRequest()
         {
             MessageType = MessageType.FuturesHolding,
@@ -295,13 +399,9 @@ public class QuikBridge(
     /// </summary>
     public async Task<int> GetFuturesLimit(string firmId, string account, int limitType, string currencyCode)
     {
-        string[] args = {$"\"{firmId}\",\"{account}\",{limitType},\"{currencyCode}\""};
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            function = MessageType.FuturesLimit.GetDescription(),
-            arguments = args
-        };
+        var data = QuikCommandFactory.CreateInvoke(
+            MessageType.FuturesLimit.GetDescription(),
+            QuikCommandFactory.CreateMixedArguments(firmId, account, limitType, currencyCode));
         var metaData = new FuturesLimitRequest()
         {
             MessageType = MessageType.FuturesLimit,
@@ -319,13 +419,41 @@ public class QuikBridge(
     public async Task<int> CreateDs(string classCode, string secCode, string interval)
     {
         var dataSourceName = BuildDatasourceName(secCode, interval);
-        string[] args = {$"\"{classCode}\",\"{secCode}\",{interval}"};
-        var data = new JsonReqData()
+        var acquireResult = await _datasourceManager.AcquireAsync(dataSourceName, () => CreateDatasourceInternal(classCode, secCode, interval));
+        _sessionResources[dataSourceName] = new SessionResourceDefinition(
+            SessionResourceKind.Datasource,
+            classCode,
+            secCode,
+            dataSourceName,
+            Interval: interval);
+
+        var bridgeMessage = new QMessage()
         {
-            method = "invoke", 
-            function = "CreateDataSource",
-            arguments = args
+            Id = acquireResult.MessageId,
+            Method = "CreateDataSource",
+            MessageType = MessageType.Datasource,
+            Ticker = secCode,
+            ClassCode = classCode,
+            Interval = interval
         };
+
+        if (!acquireResult.IsFirstReference && _dataSources.ContainsKey(dataSourceName))
+        {
+            await eventAggregator.RaiseEvent(new DataSourceSetEvent()
+            {
+                DataSourceName = dataSourceName,
+                BridgeMessage = bridgeMessage
+            });
+        }
+
+        return acquireResult.MessageId;
+    }
+
+    private async Task<int> CreateDatasourceInternal(string classCode, string secCode, string interval)
+    {
+        var data = QuikCommandFactory.CreateInvoke(
+            "CreateDataSource",
+            QuikCommandFactory.CreateMixedArguments(classCode, secCode, interval));
         var metaData = new DataSource()
         {
             MessageType = MessageType.Datasource,
@@ -333,39 +461,13 @@ public class QuikBridge(
             InstrumentClass = classCode,
             Interval = interval
         };
-        var acquireResult = await _datasourceManager.AcquireAsync(dataSourceName, () => SendRequest(data, metaData, false));
-
-        if (!acquireResult.IsFirstReference && _dataSources.ContainsKey(dataSourceName))
-        {
-            _ = eventAggregator.RaiseEvent(new DataSourceSetEvent()
-            {
-                DataSourceName = dataSourceName,
-                BridgeMessage = new QMessage()
-                {
-                    Id = acquireResult.MessageId,
-                    Method = data.function,
-                    MessageType = metaData.MessageType,
-                    Ticker = metaData.Ticker,
-                    ClassCode = metaData.InstrumentClass,
-                    Interval = metaData.Interval
-                }
-            });
-        }
-
-        return acquireResult.MessageId;
+        return await SendRequest(data, metaData, false);
     }
 
     private async Task<int> SetDsUpdateCallback(object datasource, string dataSourceName)
     {
         string jsonArguments = "{\"type\": \"callable\", \"function\": \"on_update\"}";
-        string[] args = {jsonArguments};
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            obj = datasource,
-            function = "SetUpdateCallback",
-            arguments = args
-        };
+        var data = QuikCommandFactory.CreateInvoke("SetUpdateCallback", [jsonArguments], datasource);
         var metaData = new DatasourceCallback()
         {
             MessageType = MessageType.DatasourceCallback,
@@ -380,14 +482,7 @@ public class QuikBridge(
     public async Task<int> GetBar(string dataSourceName, MessageType barFunc, int barIndex)
     {
         if (!_dataSources.TryGetValue(dataSourceName, out var source)) return 0;
-        string[] args = {Convert.ToString(barIndex)};
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            obj = source,
-            function = barFunc.GetDescription(),
-            arguments = args
-        };
+        var data = QuikCommandFactory.CreateInvoke(barFunc.GetDescription(), [Convert.ToString(barIndex)], source);
         var metaData = new DatasourceCallback()
         {
             MessageType = barFunc,
@@ -401,22 +496,23 @@ public class QuikBridge(
     /// </summary>
     public async Task<int> CloseDs(string dataSourceName)
     {
-        return await _datasourceManager.ReleaseAsync(dataSourceName, async () =>
+        var messageId = await _datasourceManager.ReleaseAsync(dataSourceName, async () =>
         {
             if (!_dataSources.TryRemove(dataSourceName, out var source)) return 0;
             return await CloseDatasourceInternal(dataSourceName, source);
         });
+
+        if (!_datasourceManager.HasConsumers(dataSourceName))
+        {
+            _sessionResources.TryRemove(dataSourceName, out _);
+        }
+
+        return messageId;
     }
     
     private async Task<int> InitOrderBook(string classCode, string secCode)
     {
-        string[] args = {"\"" + classCode + "\",\"" + secCode + "\""};
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            function = "Subscribe_Level_II_Quotes",
-            arguments = args
-        };
+        var data = QuikCommandFactory.CreateInvoke("Subscribe_Level_II_Quotes", QuikCommandFactory.CreateQuotedArguments(classCode, secCode));
         var metaData = new Subscription()
         {
             MessageType = MessageType.OrderBookInit,
@@ -428,13 +524,7 @@ public class QuikBridge(
     
     private async Task<int> GetOrderBookSnapshot(string classCode, string secCode)
     {
-        string[] args = {"\"" + classCode + "\",\"" + secCode + "\""};
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            function = "getQuoteLevel2",
-            arguments = args
-        };
+        var data = QuikCommandFactory.CreateInvoke("getQuoteLevel2", QuikCommandFactory.CreateQuotedArguments(classCode, secCode));
         var metaData = new Subscription()
         {
             MessageType = MessageType.OrderBookSnapshot,
@@ -455,17 +545,17 @@ public class QuikBridge(
             // return await InitOrderBook(classCode, secCode);
             return await DoSubscribeToOrderBook(classCode, secCode);
         });
+        _sessionResources[key] = new SessionResourceDefinition(
+            SessionResourceKind.OrderBookSubscription,
+            classCode,
+            secCode,
+            key);
         return subscriptionEntry.SubscriptionToken;
     }
 
     private async Task<int> DoSubscribeToOrderBook(string classCode, string secCode)
     {
-        var data = new JsonCommandDataSubscribeQuotes()
-        {
-            method = "subscribeQuotes",
-            cl = classCode,
-            security = secCode
-        };
+        var data = QuikCommandFactory.CreateQuotesSubscription("subscribeQuotes", classCode, secCode);
         var metaData = new Subscription()
         {
             MessageType = MessageType.SubscribeOrderbook,
@@ -483,12 +573,7 @@ public class QuikBridge(
         var key = $"{classCode}:{secCode}:orderbook";
         var msgId = await _subscriptionManager.UnsubscribeAsync(key, subscriptionToken, async () =>
         {
-            var data = new JsonCommandDataSubscribeQuotes()
-            {
-                method = "unsubscribeQuotes",
-                cl = classCode,
-                security = secCode
-            };
+            var data = QuikCommandFactory.CreateQuotesSubscription("unsubscribeQuotes", classCode, secCode);
             var metaData = new Subscription()
             {
                 MessageType = MessageType.UnsubscribeOrderbook,
@@ -501,6 +586,11 @@ public class QuikBridge(
         if (IsExtendedLogging && msgId != 0)
             Log.Information("{Sec} orderbook is unsubscribed", secCode);
 
+        if (!_subscriptionManager.HasSubscribers(key))
+        {
+            _sessionResources.TryRemove(key, out _);
+        }
+
         return msgId;
     }
 
@@ -510,25 +600,27 @@ public class QuikBridge(
     public async Task<Guid> SubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
     {
         var key = $"{classCode}:{secCode}:{paramName}";
-        var subscriptionEntry = await _subscriptionManager.SubscribeAsync(key, async () =>
-        {
-            var data = new JsonCommandDataSubscribeParam()
-            {
-                method = "subscribeParamChanges",
-                cl = classCode,
-                security = secCode,
-                param = paramName
-            };
-            var metaData = new ParamSubscription()
-            {
-                MessageType = MessageType.SubscribeParam,
-                InstrumentClass = classCode,
-                Ticker = secCode,
-                ParamName = paramName
-            };
-            return await SendRequest(data, metaData);
-        });
+        var subscriptionEntry = await _subscriptionManager.SubscribeAsync(key, () => DoSubscribeToQuotesTableParams(classCode, secCode, paramName));
+        _sessionResources[key] = new SessionResourceDefinition(
+            SessionResourceKind.QuoteParameterSubscription,
+            classCode,
+            secCode,
+            key,
+            ParamName: paramName);
         return subscriptionEntry.SubscriptionToken;
+    }
+
+    private async Task<int> DoSubscribeToQuotesTableParams(string classCode, string secCode, string paramName)
+    {
+        var data = QuikCommandFactory.CreateParamSubscription("subscribeParamChanges", classCode, secCode, paramName);
+        var metaData = new ParamSubscription()
+        {
+            MessageType = MessageType.SubscribeParam,
+            InstrumentClass = classCode,
+            Ticker = secCode,
+            ParamName = paramName
+        };
+        return await SendRequest(data, metaData);
     }
 
     /// <summary>
@@ -536,13 +628,9 @@ public class QuikBridge(
     /// </summary>
     public async Task<int> GetQuotesTableParam(string classCode, string secCode, string paramName)
     {
-        string[] args = {$"\"{classCode}\",\"{secCode}\",\"{paramName}\""};
-        var data = new JsonReqData()
-        {
-            method = "invoke", 
-            function = MessageType.GetParam.GetDescription(),
-            arguments = args
-        };
+        var data = QuikCommandFactory.CreateInvoke(
+            MessageType.GetParam.GetDescription(),
+            QuikCommandFactory.CreateQuotedArguments(classCode, secCode, paramName));
         var metaData = new ParamSubscription()
         {
             MessageType = MessageType.GetParam,
@@ -561,13 +649,7 @@ public class QuikBridge(
         var key = $"{classCode}:{secCode}:{paramName}";
         var msgId = await _subscriptionManager.UnsubscribeAsync(key, subscriptionToken, async () =>
         {
-            var data = new JsonCommandDataSubscribeParam()
-            {
-                method = "unsubscribeParamChanges",
-                cl = classCode,
-                security = secCode,
-                param = paramName
-            };
+            var data = QuikCommandFactory.CreateParamSubscription("unsubscribeParamChanges", classCode, secCode, paramName);
             var metaData = new Subscription()
             {
                 MessageType = MessageType.UnsubscribeParam,
@@ -579,6 +661,11 @@ public class QuikBridge(
 
         if (IsExtendedLogging && msgId != 0)
             Log.Information("{Sec} {Param} is unsubscribed", secCode, paramName);
+
+        if (!_subscriptionManager.HasSubscribers(key))
+        {
+            _sessionResources.TryRemove(key, out _);
+        }
         
         return msgId;
     }
@@ -589,13 +676,7 @@ public class QuikBridge(
     public async Task<int> SendTransaction(TransactionBase transaction)
     {
         var transJson = JsonConvert.SerializeObject(transaction);
-        string[] args = { transJson };
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            function = "sendTransaction",
-            arguments = args
-        };
+        var data = QuikCommandFactory.CreateInvoke("sendTransaction", [transJson]);
 
         var metaData = new TransactionMeta()
         {
@@ -614,11 +695,7 @@ public class QuikBridge(
     {
         return await _globalCallbackRegistry.RegisterAsync(name, async () =>
         {
-            var data = new JsonCommandDataCallback()
-            {
-                method = "register",
-                callback = name.GetDescription()
-            };
+            var data = QuikCommandFactory.CreateCallbackRegistration(name.GetDescription());
 
             var metaData = new MetaData()
             {
@@ -635,12 +712,7 @@ public class QuikBridge(
 
     private async Task<int> CloseDatasourceInternal(string dataSourceName, object source)
     {
-        var data = new JsonReqData()
-        {
-            method = "invoke",
-            obj = source,
-            function = "Close",
-        };
+        var data = QuikCommandFactory.CreateInvoke("Close", obj: source);
         var metaData = new DatasourceCallback()
         {
             MessageType = MessageType.DatasourceClose,
@@ -653,68 +725,7 @@ public class QuikBridge(
     {
         if (msgRegistry.TryGetMetadata(id, out var _)) return;
 
-        var qMessage = new QMessage()
-        {
-            Id = id,
-            Method = methodName,
-            MessageType = data.MessageType
-        };
-
-        switch (data)
-        {
-            case Subscription subscription:
-                if (subscription.Ticker != "")
-                {
-                    qMessage.Ticker = subscription.Ticker;
-                }
-
-                if (subscription.InstrumentClass != "")
-                {
-                    qMessage.ClassCode = subscription.InstrumentClass;
-                }
-
-                if (subscription is DataSource dsInit)
-                {
-                    qMessage.Interval = dsInit.Interval;
-                }
-
-                if (subscription is ParamSubscription paramSubscription)
-                {
-                    qMessage.ParamName = paramSubscription.ParamName;
-                }
-                break;
-            case DatasourceCallback ds:
-                qMessage.DataSource = ds.DataSource;
-                break;
-            case AccountPositionRequest accountPositionRequest:
-                qMessage.FirmId = accountPositionRequest.FirmId;
-                qMessage.ClientCode = accountPositionRequest.ClientCode;
-                qMessage.Ticker = accountPositionRequest.SecCode;
-                qMessage.Account = accountPositionRequest.Account;
-                qMessage.LimitKind = accountPositionRequest.LimitKind;
-                break;
-            case MoneyPositionRequest moneyPositionRequest:
-                qMessage.FirmId = moneyPositionRequest.FirmId;
-                qMessage.ClientCode = moneyPositionRequest.ClientCode;
-                qMessage.Tag = moneyPositionRequest.Tag;
-                qMessage.CurrencyCode = moneyPositionRequest.CurrencyCode;
-                qMessage.LimitKind = moneyPositionRequest.LimitKind;
-                break;
-            case FuturesHoldingRequest futuresHoldingRequest:
-                qMessage.FirmId = futuresHoldingRequest.FirmId;
-                qMessage.Account = futuresHoldingRequest.Account;
-                qMessage.Ticker = futuresHoldingRequest.SecCode;
-                qMessage.PositionType = futuresHoldingRequest.PositionType;
-                break;
-            case FuturesLimitRequest futuresLimitRequest:
-                qMessage.FirmId = futuresLimitRequest.FirmId;
-                qMessage.Account = futuresLimitRequest.Account;
-                qMessage.LimitKind = futuresLimitRequest.LimitType;
-                qMessage.CurrencyCode = futuresLimitRequest.CurrencyCode;
-                break;
-        }
-
-        msgRegistry.RegisterMessage(id, qMessage);
+        msgRegistry.RegisterMessage(id, QuikMessageMapper.CreateQMessage(id, methodName, data));
     }
     
     private void OnConnectionStateChanged(QuikBridgeConnectionState newState)
@@ -743,11 +754,19 @@ public class QuikBridge(
     /// </summary>
     public void Finish()
     {
+        FinishAsync().GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Асинхронно останавливает обработчик протокола и завершает внутреннюю обработку событий.
+    /// </summary>
+    public async Task FinishAsync()
+    {
         protocolHandler.Finish();
-        eventAggregator.Close();
-        Thread.Sleep(1000);
-        protocolHandler.StopClient();
-        ConnectionState = QuikBridgeConnectionState.Disconnected;
+        await protocolHandler.StopClientAsync();
+        await StopRequestExpiryLoopAsync();
+        SessionCoordinator.InvalidateRemoteState();
+        EnterDisconnectedState();
     }
     
     #endregion

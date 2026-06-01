@@ -1,13 +1,14 @@
 using QuikBridgeNet.Events;
+using QuikBridgeNetDomain.Entities;
 using Serilog;
 
 namespace QuikBridgeNet.EventHandlers;
 
-public class SocketConnectionCloseEventHandler: IDomainEventHandler<SocketConnectionCloseEvent>
+public class SocketConnectionCloseEventHandler(QuikBridge quikBridge): IDomainEventHandler<SocketConnectionCloseEvent>
 {
-    public Task HandleAsync(SocketConnectionCloseEvent domainEvent)
+    public async Task HandleAsync(SocketConnectionCloseEvent domainEvent)
     {
-        Log.Debug("Close connection confirmed by Quik");
-        return Task.CompletedTask;
+        Log.Warning("Соединение с QuikQtBridge закрыто.");
+        await quikBridge.HandleConnectionLostAsync();
     }
 }

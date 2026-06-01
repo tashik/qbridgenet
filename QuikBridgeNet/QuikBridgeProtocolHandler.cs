@@ -17,6 +17,9 @@ public class QuikBridgeProtocolHandler(QuikBridgeEventDispatcher eventDispatcher
     private Socket? _clientSocket;
     private readonly byte[] _buffer = new byte[1024];
     private StringBuilder _accumulatedData = new();
+    private readonly int _dataSourceQueueCapacity = bridgeConfig.DataSourceQueueCapacity;
+    private Task? _processQueueTask;
+    private Task? _receiveTask;
 
     private bool _isStopped = true;
 
@@ -27,7 +30,9 @@ public class QuikBridgeProtocolHandler(QuikBridgeEventDispatcher eventDispatcher
 
     private DatasourceCallbackReceived? _datasourceCallbackReceived;
     
-    private readonly BlockingCollection<JsonMessage> _dataQueue = new();
+    private BlockingCollection<JsonMessage> _dataQueue = bridgeConfig.DataSourceQueueCapacity > 0
+        ? new BlockingCollection<JsonMessage>(bridgeConfig.DataSourceQueueCapacity)
+        : new BlockingCollection<JsonMessage>();
 
     public bool IsExtendedLogging { get; set; } = bridgeConfig.UseExtendedLogging;
 
@@ -40,13 +45,14 @@ public class QuikBridgeProtocolHandler(QuikBridgeEventDispatcher eventDispatcher
     {
         try
         {
+            PrepareForNewSession();
             _clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             await _clientSocket.ConnectAsync(host, port, cancellationToken);
             Log.Information("Connected to server at {ServerIP}:{Port}", host, port);
 
             _isStopped = false;
-            _ = Task.Run(ProcessQueue, cancellationToken);
-            _ = Task.Run(() => ReceiveDataAsync(cancellationToken), cancellationToken);
+            _processQueueTask = Task.Run(ProcessQueue, cancellationToken);
+            _receiveTask = Task.Run(() => ReceiveDataAsync(cancellationToken), cancellationToken);
             return true;
         }
         catch (Exception ex)
@@ -55,14 +61,32 @@ public class QuikBridgeProtocolHandler(QuikBridgeEventDispatcher eventDispatcher
             return false;
         }
     }
+
+    private void PrepareForNewSession()
+    {
+        _accumulatedData = new StringBuilder();
+        _dataQueue = _dataSourceQueueCapacity > 0
+            ? new BlockingCollection<JsonMessage>(_dataSourceQueueCapacity)
+            : new BlockingCollection<JsonMessage>();
+        _clientSocket = null;
+    }
     
     private void ProcessQueue()
     {
-        while (!_isStopped)
+        foreach (var data in _dataQueue.GetConsumingEnumerable())
         {
-            foreach (var data in _dataQueue.GetConsumingEnumerable())
+            if (_isStopped)
+            {
+                break;
+            }
+
+            try
             {
                 _datasourceCallbackReceived?.Invoke(data);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error in datasource callback processing");
             }
         }
     }
@@ -140,19 +164,22 @@ public class QuikBridgeProtocolHandler(QuikBridgeEventDispatcher eventDispatcher
 
     private async Task SendMessageAsync(string message)
     {
+        if (_clientSocket is not { Connected: true })
+        {
+            throw new Exception("Connection problem");
+        }
+
         try
         {
-            if (_clientSocket is { Connected: true })
-            {
-                byte[] data = Encoding.UTF8.GetBytes(message);
-                await _clientSocket.SendAsync(data, SocketFlags.None);
-                if (IsExtendedLogging)
-                    Log.Information("Message sent: {Message}", message);
-            }
+            byte[] data = Encoding.UTF8.GetBytes(message);
+            await _clientSocket.SendAsync(data, SocketFlags.None);
+            if (IsExtendedLogging)
+                Log.Information("Message sent: {Message}", message);
         }
         catch (Exception e)
         {
             Log.Error(e, "Error in SendMessageAsync");
+            throw new Exception("Connection problem", e);
         }
     }
 
@@ -384,27 +411,62 @@ public class QuikBridgeProtocolHandler(QuikBridgeEventDispatcher eventDispatcher
     
     public void Finish()
     {
-        JsonCommandRequest req = new JsonCommandRequest
+        try
         {
-            id = 0,
-            type = "end"
-        };
+            JsonCommandRequest req = new JsonCommandRequest
+            {
+                id = 0,
+                type = "end"
+            };
 
-        var reqJson = JsonConvert.SerializeObject(req);
-        _clientSocket?.Send(Encoding.UTF8.GetBytes(reqJson));
+            var reqJson = JsonConvert.SerializeObject(req);
+            _clientSocket?.Send(Encoding.UTF8.GetBytes(reqJson));
+        }
+        catch (Exception e)
+        {
+            Log.Warning(e, "Error while sending end message to QuikQtBridge");
+        }
     }
-    
-    public void StopClient()
+
+    public async Task StopClientAsync()
     {
         try
         {
             _isStopped = true;
+            if (!_dataQueue.IsAddingCompleted)
+            {
+                _dataQueue.CompleteAdding();
+            }
             _clientSocket?.Close();
+
+            var backgroundTasks = new[] { _processQueueTask, _receiveTask }
+                .Where(task => task != null)
+                .Cast<Task>()
+                .ToArray();
+
+            if (backgroundTasks.Length > 0)
+            {
+                await Task.WhenAny(Task.WhenAll(backgroundTasks), Task.Delay(TimeSpan.FromSeconds(1)));
+            }
+
             Log.Information("Client stopped.");
         }
         catch (Exception e)
         {
             Log.Error(e, "Error in StopClient");
         }
+        finally
+        {
+            _clientSocket?.Dispose();
+            _clientSocket = null;
+            _processQueueTask = null;
+            _receiveTask = null;
+            _accumulatedData = new StringBuilder();
+        }
+    }
+    
+    public void StopClient()
+    {
+        StopClientAsync().GetAwaiter().GetResult();
     }
 }

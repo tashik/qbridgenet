@@ -13,7 +13,7 @@ public class ReqArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeE
 {
     private readonly bool _isExtendedLogging = bridgeConfig.UseExtendedLogging;
     
-    public Task HandleAsync(ReqArrivedEvent domainEvent)
+    public async Task HandleAsync(ReqArrivedEvent domainEvent)
     {
         var msgId = domainEvent.Req.id;
         if (_isExtendedLogging) Log.Debug("msg arrived with message id " + msgId);
@@ -33,7 +33,7 @@ public class ReqArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeE
                 var valueToken = domainEvent.Req.body?["value"];
                 var value = valueToken?.ToString();
                 
-                _ = globalEventAggregator.RaiseEvent(new InstrumentParametersUpdateEvent() {
+                await globalEventAggregator.RaiseEvent(new InstrumentParametersUpdateEvent() {
                     SecCode = secCode, ClassCode = classCode, ParamName = paramName, ParamValue = value});
                 break;
             case "quotesChange":
@@ -41,7 +41,7 @@ public class ReqArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeE
                 var orderBook = quotesToken?.ToObject<OrderBook>();
                 if (orderBook != null)
                 {
-                    _ = globalEventAggregator.RaiseEvent(new OrderBookUpdateEvent() {
+                    await globalEventAggregator.RaiseEvent(new OrderBookUpdateEvent() {
                         SecCode = secCode,ClassCode = classCode, OrderBook = orderBook
                     });
                 }
@@ -71,7 +71,7 @@ public class ReqArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeE
                                 {
                                     foreach (var t in trades)
                                     {
-                                        _ = globalEventAggregator.RaiseEvent(new AllTradeArrivedEvent() { Trade = t});
+                                        await globalEventAggregator.RaiseEvent(new AllTradeArrivedEvent() { Trade = t});
                                     }
                                 }
                             }
@@ -80,24 +80,22 @@ public class ReqArrivedEventHandler(MessageRegistry messageRegistry, QuikBridgeE
                         case "OnOrder":
                             if (TryGetTransactionalOrder(argumentsToken, out var order))
                             {
-                                _ = globalEventAggregator.RaiseEvent(new OrderArrivedEvent() { Order = order });
+                                await globalEventAggregator.RaiseEvent(new OrderArrivedEvent() { Order = order });
                             }
                             break;
                         case "OnTransReply":
                             if (TryGetTransactionalOrder(argumentsToken, out var transReplyOrder))
                             {
-                                _ = globalEventAggregator.RaiseEvent(new TransactionReplyArrivedEvent() { Order = transReplyOrder });
+                                await globalEventAggregator.RaiseEvent(new TransactionReplyArrivedEvent() { Order = transReplyOrder });
                             }
                             break;
                     }
                 }
                 break;
             default:
-                _ = globalEventAggregator.RaiseEvent(new ServiceMessageArrivedEvent() {Response = domainEvent.Req, BridgeMessage = qMessage});
+                await globalEventAggregator.RaiseEvent(new ServiceMessageArrivedEvent() {Response = domainEvent.Req, BridgeMessage = qMessage});
                 break;
         }
-
-        return Task.CompletedTask;
     }
 
     private static bool TryGetTransactionalOrder(JToken? argumentsToken, out Order? order)

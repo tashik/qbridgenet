@@ -13,6 +13,7 @@ internal class QuikBridgeDatasourceManager
         public int CreateMessageId { get; set; }
         public bool IsReady { get; set; }
         public bool CloseRequestedBeforeReady { get; set; }
+        public bool IsRemoteActive { get; set; }
     }
 
     private readonly ConcurrentDictionary<string, DatasourceState> _states = new();
@@ -26,9 +27,12 @@ internal class QuikBridgeDatasourceManager
         {
             var isFirstReference = state.RefCount == 0;
 
-            if (state.CreateMessageId == 0)
+            if (!state.IsRemoteActive)
             {
                 state.CreateMessageId = await createAsync();
+                state.IsRemoteActive = true;
+                state.IsReady = false;
+                state.CloseRequestedBeforeReady = false;
             }
 
             state.RefCount++;
@@ -73,6 +77,12 @@ internal class QuikBridgeDatasourceManager
                 return 0;
             }
 
+            if (!state.IsRemoteActive)
+            {
+                _states.TryRemove(new KeyValuePair<string, DatasourceState>(key, state));
+                return 0;
+            }
+
             if (!state.IsReady)
             {
                 state.CloseRequestedBeforeReady = true;
@@ -80,6 +90,7 @@ internal class QuikBridgeDatasourceManager
             }
 
             var messageId = await closeAsync();
+            state.IsRemoteActive = false;
             _states.TryRemove(new KeyValuePair<string, DatasourceState>(key, state));
             return messageId;
         }
@@ -106,12 +117,13 @@ internal class QuikBridgeDatasourceManager
         try
         {
             state.IsReady = true;
-            if (state.RefCount > 0 || !state.CloseRequestedBeforeReady)
+            if (state.RefCount > 0 || !state.CloseRequestedBeforeReady || !state.IsRemoteActive)
             {
                 return 0;
             }
 
             var messageId = await closeAsync();
+            state.IsRemoteActive = false;
             _states.TryRemove(new KeyValuePair<string, DatasourceState>(key, state));
             return messageId;
         }
@@ -124,5 +136,44 @@ internal class QuikBridgeDatasourceManager
     public bool HasConsumers(string key)
     {
         return _states.TryGetValue(key, out var state) && state.RefCount > 0;
+    }
+
+    public async Task<int> RestoreAsync(string key, Func<Task<int>> createAsync)
+    {
+        if (!_states.TryGetValue(key, out var state))
+        {
+            return 0;
+        }
+
+        await state.SyncRoot.WaitAsync();
+
+        try
+        {
+            if (state.RefCount == 0 || state.IsRemoteActive)
+            {
+                return 0;
+            }
+
+            state.CreateMessageId = await createAsync();
+            state.IsRemoteActive = true;
+            state.IsReady = false;
+            state.CloseRequestedBeforeReady = false;
+            return state.CreateMessageId;
+        }
+        finally
+        {
+            state.SyncRoot.Release();
+        }
+    }
+
+    public void InvalidateRemoteState()
+    {
+        foreach (var datasource in _states.Values)
+        {
+            datasource.CreateMessageId = 0;
+            datasource.IsReady = false;
+            datasource.CloseRequestedBeforeReady = false;
+            datasource.IsRemoteActive = false;
+        }
     }
 }

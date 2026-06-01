@@ -2,6 +2,7 @@ namespace QuikBridgeNetDomain.Entities;
 
 public class QMessage
 {
+    public DateTimeOffset RegisteredAtUtc { get; set; } = DateTimeOffset.UtcNow;
     public int Id { get; set; }
     public MessageType MessageType { get; set; }
     public string Method { get; set; } = "";

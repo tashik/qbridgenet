@@ -33,11 +33,20 @@ QuikBridgeNet - это .NET-клиент для работы с [QuikQtBridge](h
     "Port": 57777,
     "UseExtendedLogging": false,
     "UseExtendedEventLogging": false,
+    "EventQueueCapacity": 10000,
+    "EventHandlerQueueCapacity": 1000,
+    "DataSourceQueueCapacity": 10000,
+    "RequestTimeoutMs": 0,
+    "RequestExpirySweepIntervalMs": 1000,
     "EventQueueWarningThreshold": 0,
     "EventHandlerBacklogWarningThreshold": 0
   }
 }
 ```
+
+`EventQueueCapacity`, `EventHandlerQueueCapacity` и `DataSourceQueueCapacity` ограничивают рост внутренних очередей под нагрузкой.
+
+`RequestTimeoutMs` задаёт TTL для ожидающих ответов запросов. Значение `0` оставляет expiry выключенным. Если timeout включён, библиотека периодически удаляет зависшие request metadata, пишет warning в лог и публикует `RequestExpiredEvent`. Частота проверки задаётся через `RequestExpirySweepIntervalMs`.
 
 `EventQueueWarningThreshold` и `EventHandlerBacklogWarningThreshold` по умолчанию выключены. Если задать значение больше `0`, библиотека начнёт писать warning при росте backlog-а в event pipeline.
 
@@ -82,10 +91,12 @@ client.Finish();
 
 Дополнительные защитные слои:
 
-- `QuikBridgeSubscriptionManager` не допускает повторных удалённых подписок на один и тот же инструмент/параметр и делает реальную отписку только после ухода последнего локального подписчика.
-- `QuikBridgeDatasourceManager` ведёт ref-count для datasource и не закрывает общий datasource раньше времени.
-- `QuikBridgeCallbackRegistry` не дублирует регистрацию глобальных callback-ов.
+- `QuikBridgeSubscriptionManager` не допускает повторных удалённых подписок на один и тот же инструмент/параметр, делает реальную отписку только после ухода последнего локального подписчика и умеет восстановить remote subscribe после реконнекта.
+- `QuikBridgeDatasourceManager` ведёт ref-count для datasource, не закрывает общий datasource раньше времени и умеет переоткрыть datasource после реконнекта.
+- `QuikBridgeCallbackRegistry` не дублирует регистрацию глобальных callback-ов и повторно регистрирует их на новой socket session.
 - `QuikBridgeEventAggregator` сериализует выполнение на одного handler-а, но не даёт одному медленному handler-у остановить весь поток событий данного типа.
+
+Если при replay после реконнекта какая-то часть session state не восстановилась, библиотека не обрывает весь запуск клиента из-за первой такой ошибки. Вместо этого она пишет warning и публикует `SessionStateRestoreFailedEvent`, чтобы приложение могло решить, нужен ли повтор восстановления, деградация функциональности или аварийный stop.
 
 ## Публичный API QuikBridge
 
@@ -95,8 +106,12 @@ client.Finish();
 
 - `StartAsync(CancellationToken)` - открывает соединение и регистрирует встроенные callback-и `OnAllTrade`, `OnOrder`, `OnTransReply`.
 - `Finish()` - останавливает клиент, завершает обработку событий и закрывает соединение.
+- `FinishAsync()` - асинхронный вариант остановки клиента с ожиданием завершения внутренних background loop-ов.
+- `RestoreSessionStateAsync()` - вручную повторяет регистрацию session-scoped remote state для текущего соединения, если нужен явный повторный replay.
 - `IsExtendedLogging` - включает расширенное логирование транспортного уровня.
 - `ConnectionState` и событие `ConnectionStateChanged` - текущее состояние соединения.
+
+После разрыва соединения или `FinishAsync()` библиотека сбрасывает только volatile remote state: pending requests и удалённые session objects текущей socket session. Локальное намерение при этом сохраняется. Поэтому новый `StartAsync()` на том же экземпляре `QuikBridge` автоматически повторно регистрирует callback-и, восстанавливает активные market subscriptions и переоткрывает datasource, если у них оставались локальные потребители.
 
 ### Информационные запросы
 
@@ -149,6 +164,11 @@ client.Finish();
 
 Приложение подписывается на события через `QuikBridgeEventAggregator`.
 
+Есть два режима подписки:
+
+- typed-методы `SubscribeTo...` подходят для долгоживущих обработчиков на весь срок жизни приложения;
+- generic-метод `Subscribe<TEvent>(Func<TEvent, Task>)` возвращает `IDisposable`, который можно вызвать, если нужен явный unsubscribe от event handler-а.
+
 Доступные методы подписки:
 
 - `SubscribeToInstrumentClassesUpdate`
@@ -164,12 +184,32 @@ client.Finish();
 - `SubscribeToMoneyPositions`
 - `SubscribeToFuturesHoldings`
 - `SubscribeToFuturesLimits`
+- `SubscribeToRequestExpired`
+- `SubscribeToSessionStateRestoreFailed`
+
+Пример явной отписки от handler-а:
+
+```csharp
+using var priceSubscription = events.Subscribe<InstrumentParametersUpdateEvent>(args =>
+{
+  Console.WriteLine($"{args.ClassCode}:{args.SecCode} {args.ParamName} = {args.ParamValue}");
+  return Task.CompletedTask;
+});
+
+// ... работа с событиями
+
+priceSubscription.Dispose();
+```
+
+Практически это нужно, когда набор обработчиков меняется во время работы приложения, например при динамическом создании и удалении UI-экранов, стратегий или временных сервисов.
 
 Практически это означает следующее:
 
 - ответы на разовые запросы превращаются в typed events, если для них есть явная маршрутизация;
 - callback-и QUIK `OnAllTrade`, `OnOrder`, `OnTransReply` поднимаются как отдельные события;
 - запросы позиций и лимитов по счетам тоже приходят не как return value метода, а как отдельные typed events;
+- истечение TTL у зависшего request поднимается как `RequestExpiredEvent`;
+- сбой отдельного шага replay после реконнекта поднимается как `SessionStateRestoreFailedEvent`;
 - служебные или неразобранные сообщения попадают в `ServiceMessageArrivedEvent`.
 
 ### События по позициям и лимитам
@@ -210,6 +250,7 @@ client.Finish();
 
 - `StartAsync(...)` возвращает `Task`, то есть завершение попытки установить соединение;
 - `Finish()` завершает клиент локально;
+- `FinishAsync()` завершает клиент асинхронно и дожидается остановки внутренних loop-ов;
 - `GetEventProcessingMetrics()` и `GetEventProcessingMetrics<TEvent>()` возвращают готовый snapshot внутреннего состояния event pipeline.
 
 Не возвращают полезную нагрузку сразу, а только подтверждают отправку запроса:

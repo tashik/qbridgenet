@@ -18,6 +18,8 @@ public delegate Task AccountPositionArrivedHandler(AccountPositionArrivedEvent a
 public delegate Task MoneyPositionArrivedHandler(MoneyPositionArrivedEvent args);
 public delegate Task FuturesHoldingArrivedHandler(FuturesHoldingArrivedEvent args);
 public delegate Task FuturesLimitArrivedHandler(FuturesLimitArrivedEvent args);
+public delegate Task RequestExpiredHandler(RequestExpiredEvent args);
+public delegate Task SessionStateRestoreFailedHandler(SessionStateRestoreFailedEvent args);
 
 public sealed record EventProcessingMetrics(
     Type EventType,
@@ -28,29 +30,58 @@ public sealed record EventProcessingMetrics(
 
 public class QuikBridgeEventAggregator
 {
+    private sealed class EventSubscription(Action unsubscribe) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 1)
+            {
+                return;
+            }
+
+            unsubscribe();
+        }
+    }
+
+    private interface IEventSlot
+    {
+        int SubscriberCount { get; }
+        void Complete(Exception error);
+    }
+
     private sealed class EventSubscriber<TEvent>
     {
         private readonly Func<TEvent, Task> _handler;
         private readonly bool _isExtendedLogging;
         private readonly Action<Type> _onHandlerStarted;
         private readonly Action<Type> _onHandlerCompleted;
+        private readonly SemaphoreSlim? _capacityGate;
         private readonly object _syncRoot = new();
         private Task _tail = Task.CompletedTask;
 
         public EventSubscriber(
             Func<TEvent, Task> handler,
             bool isExtendedLogging,
+            int queueCapacity,
             Action<Type> onHandlerStarted,
             Action<Type> onHandlerCompleted)
         {
             _handler = handler;
             _isExtendedLogging = isExtendedLogging;
+            _capacityGate = queueCapacity > 0 ? new SemaphoreSlim(queueCapacity, queueCapacity) : null;
             _onHandlerStarted = onHandlerStarted;
             _onHandlerCompleted = onHandlerCompleted;
         }
 
-        public void Enqueue(TEvent args)
+        public async Task EnqueueAsync(TEvent args)
         {
+            if (_capacityGate != null)
+            {
+                await _capacityGate.WaitAsync();
+            }
+
             lock (_syncRoot)
             {
                 _tail = _tail.ContinueWith(
@@ -76,24 +107,59 @@ public class QuikBridgeEventAggregator
             finally
             {
                 _onHandlerCompleted(typeof(TEvent));
+                _capacityGate?.Release();
             }
         }
     }
 
-    private readonly ConcurrentDictionary<Type, object> _channels = new();
-    private readonly ConcurrentDictionary<Type, object> _subscribers = new();
+    private sealed class EventSlot<TEvent> : IEventSlot
+    {
+        public EventSlot(Channel<TEvent> channel)
+        {
+            Channel = channel;
+        }
+
+        public Channel<TEvent> Channel { get; }
+        public ConcurrentDictionary<long, EventSubscriber<TEvent>> Subscribers { get; } = new();
+        public int SubscriberCount => Subscribers.Count;
+
+        public long AddSubscriber(EventSubscriber<TEvent> subscriber)
+        {
+            var subscriberId = Interlocked.Increment(ref _nextSubscriberId);
+            Subscribers[subscriberId] = subscriber;
+            return subscriberId;
+        }
+
+        public void RemoveSubscriber(long subscriberId)
+        {
+            Subscribers.TryRemove(subscriberId, out _);
+        }
+
+        public void Complete(Exception error)
+        {
+            Channel.Writer.TryComplete(error);
+        }
+
+        private long _nextSubscriberId;
+    }
+
+    private readonly ConcurrentDictionary<Type, IEventSlot> _eventSlots = new();
     private readonly ConcurrentDictionary<Type, int> _processingFlags = new();
     private readonly ConcurrentDictionary<Type, int> _pendingEvents = new();
     private readonly ConcurrentDictionary<Type, int> _pendingHandlerExecutions = new();
     private readonly ConcurrentDictionary<Type, int> _activeHandlerExecutions = new();
     
     private readonly bool _isExtendedLogging;
+    private readonly int _eventQueueCapacity;
+    private readonly int _eventHandlerQueueCapacity;
     private readonly int _eventQueueWarningThreshold;
     private readonly int _eventHandlerBacklogWarningThreshold;
     
     public QuikBridgeEventAggregator(QuikBridgeConfig bridgeConfig)
     {
         _isExtendedLogging = bridgeConfig.UseExtendedEventLogging;
+        _eventQueueCapacity = bridgeConfig.EventQueueCapacity;
+        _eventHandlerQueueCapacity = bridgeConfig.EventHandlerQueueCapacity;
         _eventQueueWarningThreshold = bridgeConfig.EventQueueWarningThreshold;
         _eventHandlerBacklogWarningThreshold = bridgeConfig.EventHandlerBacklogWarningThreshold;
         AddEventType<InstrumentParametersUpdateEvent, InstrumentParameterUpdateHandler>();
@@ -109,12 +175,22 @@ public class QuikBridgeEventAggregator
         AddEventType<MoneyPositionArrivedEvent, MoneyPositionArrivedHandler>();
         AddEventType<FuturesHoldingArrivedEvent, FuturesHoldingArrivedHandler>();
         AddEventType<FuturesLimitArrivedEvent, FuturesLimitArrivedHandler>();
+        AddEventType<RequestExpiredEvent, RequestExpiredHandler>();
+        AddEventType<SessionStateRestoreFailedEvent, SessionStateRestoreFailedHandler>();
     }
     
     private void AddEventType<TEvent, THandler>()
     {
-        _channels[typeof(TEvent)] = Channel.CreateUnbounded<TEvent>();
-        _subscribers[typeof(TEvent)] = new ConcurrentBag<EventSubscriber<TEvent>>();
+        var channel = _eventQueueCapacity > 0
+            ? Channel.CreateBounded<TEvent>(new BoundedChannelOptions(_eventQueueCapacity)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = false
+            })
+            : Channel.CreateUnbounded<TEvent>();
+
+        _eventSlots[typeof(TEvent)] = new EventSlot<TEvent>(channel);
         _processingFlags[typeof(TEvent)] = 0;
         _pendingEvents[typeof(TEvent)] = 0;
         _pendingHandlerExecutions[typeof(TEvent)] = 0;
@@ -123,99 +199,110 @@ public class QuikBridgeEventAggregator
     
     public void SubscribeToInstrumentClassesUpdate(Func<InstrumentClassesUpdateEvent, Task> handler)
     {
-        Subscribe(handler);
+        SubscribeCore(handler);
     }
 
     public void SubscribeToInstrumentParameterUpdate(Func<InstrumentParametersUpdateEvent, Task> handler)
     {
-       Subscribe(handler);
+         SubscribeCore(handler);
     }
 
     public void SubscribeToOrderBookUpdate(Func<OrderBookUpdateEvent, Task> handler)
     {
-        Subscribe(handler);
+        SubscribeCore(handler);
     }
 
     public void SubscribeToServiceMessages(Func<ServiceMessageArrivedEvent, Task> handler)
     {
-        Subscribe(handler);
+        SubscribeCore(handler);
     }
     
     public void SubscribeToDataSourceSet(Func<DataSourceSetEvent, Task> handler)
     {
-        Subscribe(handler);
+        SubscribeCore(handler);
     }
     
     public void SubscribeToAllTrades(Func<AllTradeArrivedEvent, Task> handler)
     {
-        Subscribe(handler);
+        SubscribeCore(handler);
     }
 
     public void SubscribeToOrders(Func<OrderArrivedEvent, Task> handler)
     {
-        Subscribe(handler);
+        SubscribeCore(handler);
     }
 
     public void SubscribeToTransactionReplies(Func<TransactionReplyArrivedEvent, Task> handler)
     {
-        Subscribe(handler);
+        SubscribeCore(handler);
     }
 
     public void SubscribeToSecurityInfo(Func<SecurityContractArrivedEvent, Task> handler)
     {
-        Subscribe(handler);
+        SubscribeCore(handler);
     }
 
     public void SubscribeToAccountPositions(Func<AccountPositionArrivedEvent, Task> handler)
     {
-        Subscribe(handler);
+        SubscribeCore(handler);
     }
 
     public void SubscribeToMoneyPositions(Func<MoneyPositionArrivedEvent, Task> handler)
     {
-        Subscribe(handler);
+        SubscribeCore(handler);
     }
 
     public void SubscribeToFuturesHoldings(Func<FuturesHoldingArrivedEvent, Task> handler)
     {
-        Subscribe(handler);
+        SubscribeCore(handler);
     }
 
     public void SubscribeToFuturesLimits(Func<FuturesLimitArrivedEvent, Task> handler)
     {
-        Subscribe(handler);
+        SubscribeCore(handler);
+    }
+
+    public void SubscribeToRequestExpired(Func<RequestExpiredEvent, Task> handler)
+    {
+        SubscribeCore(handler);
+    }
+
+    public void SubscribeToSessionStateRestoreFailed(Func<SessionStateRestoreFailedEvent, Task> handler)
+    {
+        SubscribeCore(handler);
+    }
+
+    public IDisposable Subscribe<TEvent>(Func<TEvent, Task> handler)
+    {
+        return SubscribeCore(handler);
     }
     
-    private void Subscribe<TEvent>(Func<TEvent, Task> handler)
+    private IDisposable SubscribeCore<TEvent>(Func<TEvent, Task> handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
 
         var key = typeof(TEvent);
-        _subscribers.TryGetValue(key, out var bagObj);
-        var subscriber = new EventSubscriber<TEvent>(handler, _isExtendedLogging, OnHandlerStarted, OnHandlerCompleted);
-        
-        if (bagObj is ConcurrentBag<EventSubscriber<TEvent>> bag)
+        var subscriber = new EventSubscriber<TEvent>(handler, _isExtendedLogging, _eventHandlerQueueCapacity, OnHandlerStarted, OnHandlerCompleted);
+
+        if (_eventSlots.TryGetValue(key, out var slotObj) && slotObj is EventSlot<TEvent> slot)
         {
-            bag.Add(subscriber);
+            var subscriberId = slot.AddSubscriber(subscriber);
+            EnsureProcessingIsRunning<TEvent>();
+            return new EventSubscription(() => slot.RemoveSubscriber(subscriberId));
         }
-        else
-        {
-            bag = new ConcurrentBag<EventSubscriber<TEvent>>();
-            _subscribers[key] = bag;
-            bag.Add(subscriber);
-        }
-        
+
         EnsureProcessingIsRunning<TEvent>();
+        return new EventSubscription(() => { });
     }
 
     public async Task RaiseEvent<TEvent>(TEvent eventArgs)
     {
-        if (_channels.TryGetValue(typeof(TEvent), out var channelObj) && channelObj is Channel<TEvent> channel)
+        if (_eventSlots.TryGetValue(typeof(TEvent), out var slotObj) && slotObj is EventSlot<TEvent> slot)
         {
             var pendingEvents = _pendingEvents.AddOrUpdate(typeof(TEvent), 1, (_, current) => current + 1);
             LogPressureIfNeeded(typeof(TEvent), pendingEvents, _pendingHandlerExecutions.GetValueOrDefault(typeof(TEvent)));
             if (_isExtendedLogging) Console.WriteLine($"[{typeof(TEvent)}] Raising event...");
-            await channel.Writer.WriteAsync(eventArgs);
+            await slot.Channel.Writer.WriteAsync(eventArgs);
             EnsureProcessingIsRunning<TEvent>();
         }
         else
@@ -245,35 +332,23 @@ public class QuikBridgeEventAggregator
     
     private async Task ProcessEvents<TEvent>()
     {
-        if (_channels.TryGetValue(typeof(TEvent), out var channelObj) && channelObj is Channel<TEvent> channel)
+        if (_eventSlots.TryGetValue(typeof(TEvent), out var slotObj) && slotObj is EventSlot<TEvent> slot)
         {
-            if (!_subscribers.TryGetValue(typeof(TEvent), out var subscribersObj))
-            {
-                if (_isExtendedLogging) Console.WriteLine($"[{typeof(TEvent)}] No subscribers found in dictionary.");
-                return;
-            }
-
-            if (subscribersObj is not ConcurrentBag<EventSubscriber<TEvent>> subscribers)
-            {
-                if (_isExtendedLogging) Console.WriteLine($"[{typeof(TEvent)}] ERROR: Subscribers object is of type {subscribersObj.GetType().FullName}, expected ConcurrentBag<EventSubscriber<TEvent>>.");
-                return;
-            }
-
             try
             {
                 if (_isExtendedLogging) Console.WriteLine($"[{typeof(TEvent)}] Started event processing...");
 
-                await foreach (var args in channel.Reader.ReadAllAsync())
+                await foreach (var args in slot.Channel.Reader.ReadAllAsync())
                 {
                     _pendingEvents.AddOrUpdate(typeof(TEvent), 0, (_, current) => Math.Max(0, current - 1));
                     if (_isExtendedLogging) Console.WriteLine($"[{typeof(TEvent)}] Event received: {args}");
 
-                    var handlers = subscribers.ToArray();
+                    var handlers = slot.Subscribers.Values.ToArray();
                     var pendingHandlers = _pendingHandlerExecutions.AddOrUpdate(typeof(TEvent), handlers.Length, (_, current) => current + handlers.Length);
                     LogPressureIfNeeded(typeof(TEvent), _pendingEvents.GetValueOrDefault(typeof(TEvent)), pendingHandlers);
                     foreach (var handler in handlers)
                     {
-                        handler.Enqueue(args);
+                        await handler.EnqueueAsync(args);
                     }
                 }
             }
@@ -308,7 +383,7 @@ public class QuikBridgeEventAggregator
 
     public IReadOnlyCollection<EventProcessingMetrics> GetAllMetricsSnapshots()
     {
-        return _channels.Keys.Select(GetMetricsSnapshot).ToArray();
+        return _eventSlots.Keys.Select(GetMetricsSnapshot).ToArray();
     }
 
     private EventProcessingMetrics GetMetricsSnapshot(Type eventType)
@@ -323,28 +398,12 @@ public class QuikBridgeEventAggregator
 
     private int GetSubscriberCount(Type eventType)
     {
-        if (!_subscribers.TryGetValue(eventType, out var subscribersObj))
+        if (!_eventSlots.TryGetValue(eventType, out var slot))
         {
             return 0;
         }
 
-        return subscribersObj switch
-        {
-            ConcurrentBag<EventSubscriber<InstrumentClassesUpdateEvent>> bag => bag.Count,
-            ConcurrentBag<EventSubscriber<InstrumentParametersUpdateEvent>> bag => bag.Count,
-            ConcurrentBag<EventSubscriber<OrderBookUpdateEvent>> bag => bag.Count,
-            ConcurrentBag<EventSubscriber<ServiceMessageArrivedEvent>> bag => bag.Count,
-            ConcurrentBag<EventSubscriber<DataSourceSetEvent>> bag => bag.Count,
-            ConcurrentBag<EventSubscriber<AllTradeArrivedEvent>> bag => bag.Count,
-            ConcurrentBag<EventSubscriber<OrderArrivedEvent>> bag => bag.Count,
-            ConcurrentBag<EventSubscriber<TransactionReplyArrivedEvent>> bag => bag.Count,
-            ConcurrentBag<EventSubscriber<SecurityContractArrivedEvent>> bag => bag.Count,
-            ConcurrentBag<EventSubscriber<AccountPositionArrivedEvent>> bag => bag.Count,
-            ConcurrentBag<EventSubscriber<MoneyPositionArrivedEvent>> bag => bag.Count,
-            ConcurrentBag<EventSubscriber<FuturesHoldingArrivedEvent>> bag => bag.Count,
-            ConcurrentBag<EventSubscriber<FuturesLimitArrivedEvent>> bag => bag.Count,
-            _ => 0
-        };
+        return slot.SubscriberCount;
     }
 
     private void OnHandlerStarted(Type eventType)
@@ -374,26 +433,9 @@ public class QuikBridgeEventAggregator
 
     public void Close()
     {
-        foreach (var channelPair in _channels)
+        foreach (var eventSlot in _eventSlots.Values)
         {
-            var channelObj = channelPair.Value;
-            
-            var writerProperty = channelObj.GetType().GetProperty("Writer");
-            var writerInstance = writerProperty?.GetValue(channelObj);
-            var completeMethod = writerInstance?.GetType().GetMethod("Complete");
-
-            if (completeMethod != null)
-            {
-                var parameters = completeMethod!.GetParameters();
-                if (_isExtendedLogging) Console.WriteLine($"[Debug] Complete method found: {completeMethod}");
-                if (_isExtendedLogging) Console.WriteLine($"[Debug] Complete method has {parameters.Length} parameters.");
-
-                foreach (var param in parameters)
-                {
-                    if (_isExtendedLogging) Console.WriteLine($"[Debug] Parameter: {param.Name}, Type: {param.ParameterType}");
-                }
-                completeMethod.Invoke(writerInstance, [new Exception("Channel closed.")]);
-            }
+            eventSlot.Complete(new Exception("Channel closed."));
         }
     }
 

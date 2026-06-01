@@ -41,6 +41,138 @@ public class RuntimeSmokeTests
     }
 
     [Fact]
+    public async Task ProcessQueue_continues_after_datasource_callback_exception()
+    {
+        var handler = CreateProtocolHandler();
+        var processedMessages = 0;
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        handler.RegisterDataSourceCallback(_ =>
+        {
+            var currentCount = Interlocked.Increment(ref processedMessages);
+            if (currentCount == 1)
+            {
+                throw new InvalidOperationException("boom");
+            }
+
+            completion.TrySetResult();
+        });
+
+        SetPrivateField(handler, "_isStopped", false);
+        var queue = GetPrivateField<BlockingCollection<JsonMessage>>(handler, "_dataQueue");
+        var processTask = Task.Run(() => InvokePrivate<object?>(handler, "ProcessQueue"));
+
+        queue.Add(new JsonMessage { id = 1, type = "req", body = JObject.Parse("{\"object\":1}") });
+        queue.Add(new JsonMessage { id = 2, type = "req", body = JObject.Parse("{\"object\":2}") });
+
+        await completion.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        await handler.StopClientAsync();
+        await processTask.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(2, processedMessages);
+    }
+
+    [Fact]
+    public async Task FinishAsync_clears_pending_request_registry()
+    {
+        var registry = new MessageRegistry();
+        var bridge = CreateBridge(registry);
+
+        registry.RegisterMessage(41, new QMessage
+        {
+            Id = 41,
+            MessageType = MessageType.Classes,
+            Method = "getClassesList"
+        });
+
+        await bridge.FinishAsync();
+
+        Assert.Equal(0, registry.Count);
+    }
+
+    [Fact]
+    public async Task ExpirePendingRequestsAsync_raises_request_expired_event()
+    {
+        var registry = new MessageRegistry();
+        var bridge = CreateBridge(registry, new QuikBridgeConfig { RequestTimeoutMs = 1000 });
+        var eventAggregator = GetEventAggregator(bridge);
+        var completion = new TaskCompletionSource<RequestExpiredEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        eventAggregator.SubscribeToRequestExpired(args =>
+        {
+            completion.TrySetResult(args);
+            return Task.CompletedTask;
+        });
+
+        registry.RegisterMessage(99, new QMessage
+        {
+            Id = 99,
+            Method = "getClassesList",
+            MessageType = MessageType.Classes,
+            RegisteredAtUtc = DateTimeOffset.UtcNow.AddSeconds(-5)
+        });
+
+        var expiryTask = InvokePrivate<Task>(bridge, "ExpirePendingRequestsAsync");
+        await expiryTask;
+
+        var expiredEvent = await completion.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.NotNull(expiredEvent.BridgeMessage);
+        Assert.Equal(99, expiredEvent.BridgeMessage!.Id);
+        Assert.Equal(1000, expiredEvent.TimeoutMs);
+        Assert.False(registry.TryGetMetadata(99, out _));
+    }
+
+    [Fact]
+    public async Task RestoreSessionStateAsync_raises_event_when_restore_step_fails()
+    {
+        var registry = new MessageRegistry();
+        var bridge = CreateBridge(registry);
+        var eventAggregator = GetEventAggregator(bridge);
+        var completion = new TaskCompletionSource<SessionStateRestoreFailedEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        eventAggregator.SubscribeToSessionStateRestoreFailed(args =>
+        {
+            completion.TrySetResult(args);
+            return Task.CompletedTask;
+        });
+
+        var callbackRegistry = GetPrivateField<object>(bridge, "_globalCallbackRegistry");
+        var desiredCallbacks = GetPrivateField<HashSet<MessageType>>(callbackRegistry, "_desiredKeys");
+        desiredCallbacks.Add(MessageType.OnAllTrade);
+
+        bridge.ConnectionState = QuikBridgeConnectionState.Connected;
+
+        await bridge.RestoreSessionStateAsync();
+
+        var failedEvent = await completion.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal("GlobalCallback", failedEvent.Operation);
+        Assert.Equal(nameof(MessageType.OnAllTrade), failedEvent.Key);
+        Assert.Equal("Connection problem", failedEvent.ErrorMessage);
+    }
+
+    [Fact]
+    public void PrepareForNewSession_recreates_completed_datasource_queue()
+    {
+        var handler = CreateProtocolHandler();
+        var originalQueue = GetPrivateField<BlockingCollection<JsonMessage>>(handler, "_dataQueue");
+
+        originalQueue.CompleteAdding();
+        SetPrivateField(handler, "_accumulatedData", new System.Text.StringBuilder("stale"));
+
+        InvokePrivate<object?>(handler, "PrepareForNewSession");
+
+        var newQueue = GetPrivateField<BlockingCollection<JsonMessage>>(handler, "_dataQueue");
+        var buffer = GetPrivateField<System.Text.StringBuilder>(handler, "_accumulatedData");
+
+        Assert.NotSame(originalQueue, newQueue);
+        Assert.False(newQueue.IsAddingCompleted);
+        Assert.Equal(string.Empty, buffer.ToString());
+    }
+
+    [Fact]
     public async Task RespArrivedEventHandler_removes_message_from_registry_after_handling()
     {
         var registry = new MessageRegistry();
@@ -68,7 +200,160 @@ public class RuntimeSmokeTests
     }
 
     [Fact]
-    public async Task SendTransaction_registers_send_transaction_metadata_before_transport_failure()
+    public async Task RespArrivedEventHandler_processes_security_info_burst_without_stalling()
+    {
+        const int totalMessages = 3000;
+        var registry = new MessageRegistry();
+        var config = new QuikBridgeConfig
+        {
+            EventQueueCapacity = 32,
+            EventHandlerQueueCapacity = 16
+        };
+        var eventAggregator = new QuikBridgeEventAggregator(config);
+        var responseHandler = new RespArrivedEventHandler(registry, eventAggregator, config);
+        var processedCount = 0;
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        eventAggregator.SubscribeToSecurityInfo(args =>
+        {
+            if (args.Contract != null && Interlocked.Increment(ref processedCount) == totalMessages)
+            {
+                completion.TrySetResult();
+            }
+
+            return Task.CompletedTask;
+        });
+
+        for (var index = 1; index <= totalMessages; index++)
+        {
+            registry.RegisterMessage(index, new QMessage
+            {
+                Id = index,
+                MessageType = MessageType.SecurityContract,
+                Method = "getSecurityInfo",
+                ClassCode = "TQBR",
+                Ticker = $"SEC{index}"
+            });
+
+            await responseHandler.HandleAsync(new RespArrivedEvent(new JsonMessage
+            {
+                id = index,
+                type = "ans",
+                body = JObject.Parse($$"""
+                    {
+                      "result": [
+                        {
+                          "class_code": "TQBR",
+                          "sec_code": "SEC{{index}}",
+                          "code": "SEC{{index}}",
+                          "name": "Security {{index}}"
+                        }
+                      ]
+                    }
+                    """)
+            }));
+        }
+
+        await completion.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(totalMessages, processedCount);
+        Assert.Equal(0, registry.Count);
+        eventAggregator.Close();
+    }
+
+    [Fact]
+    public async Task SocketConnectionCloseEventHandler_moves_bridge_to_disconnected_state()
+    {
+        var registry = new MessageRegistry();
+        var bridge = CreateBridge(registry);
+        var handler = new SocketConnectionCloseEventHandler(bridge);
+        var states = new List<QuikBridgeConnectionState>();
+
+        registry.RegisterMessage(77, new QMessage
+        {
+            Id = 77,
+            MessageType = MessageType.Classes,
+            Method = "getClassesList"
+        });
+
+        bridge.ConnectionStateChanged += state => states.Add(state);
+        bridge.ConnectionState = QuikBridgeConnectionState.Connected;
+
+        await handler.HandleAsync(new SocketConnectionCloseEvent());
+
+        Assert.Equal(QuikBridgeConnectionState.Disconnected, bridge.ConnectionState);
+        Assert.Equal(0, registry.Count);
+        Assert.Contains(QuikBridgeConnectionState.Error, states);
+        Assert.Equal(QuikBridgeConnectionState.Disconnected, states.Last());
+    }
+
+    [Fact]
+    public void ConnectionState_error_transition_emits_error_then_disconnected()
+    {
+        var bridge = CreateBridge(new MessageRegistry());
+        var states = new List<QuikBridgeConnectionState>();
+
+        bridge.ConnectionStateChanged += state => states.Add(state);
+        bridge.ConnectionState = QuikBridgeConnectionState.Connected;
+
+        bridge.ConnectionState = QuikBridgeConnectionState.Error;
+
+        Assert.Equal(QuikBridgeConnectionState.Disconnected, bridge.ConnectionState);
+        Assert.Equal(
+            [
+                QuikBridgeConnectionState.Connected,
+                QuikBridgeConnectionState.Error,
+                QuikBridgeConnectionState.Disconnected
+            ],
+            states);
+    }
+
+    [Fact]
+    public void MessageRegistry_expires_only_stale_messages()
+    {
+        var registry = new MessageRegistry();
+
+        registry.RegisterMessage(1, new QMessage
+        {
+            Id = 1,
+            MessageType = MessageType.Classes,
+            Method = "getClassesList",
+            RegisteredAtUtc = DateTimeOffset.UtcNow.AddSeconds(-10)
+        });
+
+        registry.RegisterMessage(2, new QMessage
+        {
+            Id = 2,
+            MessageType = MessageType.Securities,
+            Method = "getClassSecurities",
+            RegisteredAtUtc = DateTimeOffset.UtcNow
+        });
+
+        var expired = registry.ExpireOlderThan(TimeSpan.FromSeconds(5));
+        var expiredMessage = Assert.Single(expired);
+
+        Assert.Equal(1, expiredMessage.Id);
+        Assert.False(registry.TryGetMetadata(1, out _));
+        Assert.True(registry.TryGetMetadata(2, out _));
+    }
+
+    [Fact]
+    public void Internal_service_message_handler_is_registered_only_once()
+    {
+        var registry = new MessageRegistry();
+        var bridge = CreateBridge(registry);
+        var aggregator = GetEventAggregator(bridge);
+
+        InvokePrivate<object?>(bridge, "EnsureInternalServiceHandlerRegistered");
+        InvokePrivate<object?>(bridge, "EnsureInternalServiceHandlerRegistered");
+
+        var metrics = aggregator.GetMetricsSnapshot<ServiceMessageArrivedEvent>();
+
+        Assert.Equal(1, metrics.SubscriberCount);
+    }
+
+    [Fact]
+    public async Task SendTransaction_removes_send_transaction_metadata_after_transport_failure()
     {
         var registry = new MessageRegistry();
         var bridge = CreateBridge(registry);
@@ -85,68 +370,45 @@ public class RuntimeSmokeTests
         };
 
         var exception = await Assert.ThrowsAsync<Exception>(() => bridge.SendTransaction(transaction));
-        var message = GetSingleRegisteredMessage(registry);
 
         Assert.Equal("Connection problem", exception.Message);
-        Assert.Equal("sendTransaction", message.Method);
-        Assert.Equal(MessageType.SendTransaction, message.MessageType);
-        Assert.Equal(transaction.CLASSCODE, message.ClassCode);
-        Assert.Equal(transaction.SECCODE, message.Ticker);
+        Assert.False(HasRegisteredMessages(registry));
     }
 
         [Fact]
-        public async Task GetAccountPosition_registers_account_position_request_metadata_before_transport_failure()
+        public async Task GetAccountPosition_removes_account_position_request_metadata_after_transport_failure()
         {
                 var registry = new MessageRegistry();
                 var bridge = CreateBridge(registry);
 
                 var exception = await Assert.ThrowsAsync<Exception>(() => bridge.GetAccountPosition("MC0061900000", "12345", "SBER", "L01+00000F00", 0));
-                var message = GetSingleRegisteredMessage(registry);
 
                 Assert.Equal("Connection problem", exception.Message);
-                Assert.Equal("getDepoEx", message.Method);
-                Assert.Equal(MessageType.AccountPosition, message.MessageType);
-                Assert.Equal("MC0061900000", message.FirmId);
-                Assert.Equal("12345", message.ClientCode);
-                Assert.Equal("SBER", message.Ticker);
-                Assert.Equal("L01+00000F00", message.Account);
-                Assert.Equal(0, message.LimitKind);
+                Assert.False(HasRegisteredMessages(registry));
         }
 
             [Fact]
-            public async Task GetFuturesHolding_registers_futures_holding_request_metadata_before_transport_failure()
+            public async Task GetFuturesHolding_removes_futures_holding_request_metadata_after_transport_failure()
             {
                 var registry = new MessageRegistry();
                 var bridge = CreateBridge(registry);
 
                 var exception = await Assert.ThrowsAsync<Exception>(() => bridge.GetFuturesHolding("MC0061900000", "SPBFUT00PST", "SiM6", 0));
-                var message = GetSingleRegisteredMessage(registry);
 
                 Assert.Equal("Connection problem", exception.Message);
-                Assert.Equal("getFuturesHolding", message.Method);
-                Assert.Equal(MessageType.FuturesHolding, message.MessageType);
-                Assert.Equal("MC0061900000", message.FirmId);
-                Assert.Equal("SPBFUT00PST", message.Account);
-                Assert.Equal("SiM6", message.Ticker);
-                Assert.Equal(0, message.PositionType);
+                Assert.False(HasRegisteredMessages(registry));
             }
 
             [Fact]
-            public async Task GetFuturesLimit_registers_futures_limit_request_metadata_before_transport_failure()
+    public async Task GetFuturesLimit_removes_futures_limit_request_metadata_after_transport_failure()
             {
                 var registry = new MessageRegistry();
                 var bridge = CreateBridge(registry);
 
                 var exception = await Assert.ThrowsAsync<Exception>(() => bridge.GetFuturesLimit("MC0061900000", "SPBFUT00PST", 0, "SUR"));
-                var message = GetSingleRegisteredMessage(registry);
 
                 Assert.Equal("Connection problem", exception.Message);
-                Assert.Equal("getFuturesLimit", message.Method);
-                Assert.Equal(MessageType.FuturesLimit, message.MessageType);
-                Assert.Equal("MC0061900000", message.FirmId);
-                Assert.Equal("SPBFUT00PST", message.Account);
-                Assert.Equal(0, message.LimitKind);
-                Assert.Equal("SUR", message.CurrencyCode);
+        Assert.False(HasRegisteredMessages(registry));
             }
 
         [Fact]
@@ -526,12 +788,21 @@ public class RuntimeSmokeTests
                 eventAggregator.Close();
         }
 
-    private static QuikBridge CreateBridge(MessageRegistry registry)
+    private static QuikBridge CreateBridge(MessageRegistry registry, QuikBridgeConfig? config = null)
     {
-        var config = new QuikBridgeConfig();
+        config ??= new QuikBridgeConfig();
         var eventAggregator = new QuikBridgeEventAggregator(config);
         var protocolHandler = CreateProtocolHandler(config);
         return new QuikBridge(protocolHandler, registry, eventAggregator, config);
+    }
+
+    private static QuikBridgeEventAggregator GetEventAggregator(QuikBridge bridge)
+    {
+        var field = typeof(QuikBridge).GetField("<eventAggregator>P", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Assert.NotNull(field);
+
+        return (QuikBridgeEventAggregator)field!.GetValue(bridge)!;
     }
 
     private static QuikBridgeProtocolHandler CreateProtocolHandler(QuikBridgeConfig? config = null)
@@ -550,6 +821,35 @@ public class RuntimeSmokeTests
         var entries = (ConcurrentDictionary<int, QMessage>)field!.GetValue(registry)!;
 
         return Assert.Single(entries.Values);
+    }
+
+    private static bool HasRegisteredMessages(MessageRegistry registry)
+    {
+        var field = typeof(MessageRegistry).GetField("_registry", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Assert.NotNull(field);
+
+        var entries = (ConcurrentDictionary<int, QMessage>)field!.GetValue(registry)!;
+
+        return !entries.IsEmpty;
+    }
+
+    private static T GetPrivateField<T>(object target, string fieldName)
+    {
+        var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Assert.NotNull(field);
+
+        return (T)field!.GetValue(target)!;
+    }
+
+    private static void SetPrivateField(object target, string fieldName, object? value)
+    {
+        var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Assert.NotNull(field);
+
+        field!.SetValue(target, value);
     }
 
     private static T InvokePrivate<T>(object target, string methodName, params object[] args)

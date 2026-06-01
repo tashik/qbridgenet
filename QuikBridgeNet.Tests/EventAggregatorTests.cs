@@ -119,4 +119,35 @@ public class EventAggregatorTests
         releaseFirstHandler.TrySetResult();
         aggregator.Close();
     }
+
+    [Fact]
+    public async Task Generic_subscription_can_be_disposed_to_stop_future_delivery()
+    {
+        var aggregator = new QuikBridgeEventAggregator(new QuikBridgeConfig());
+        var handledValues = new List<string>();
+        var firstEventHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var subscription = aggregator.Subscribe<InstrumentParametersUpdateEvent>(args =>
+        {
+            lock (handledValues)
+            {
+                handledValues.Add(args.ParamValue!);
+            }
+
+            firstEventHandled.TrySetResult();
+            return Task.CompletedTask;
+        });
+
+        await aggregator.RaiseEvent(new InstrumentParametersUpdateEvent { ParamValue = "first" });
+        await firstEventHandled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        subscription.Dispose();
+        Assert.Equal(0, aggregator.GetMetricsSnapshot<InstrumentParametersUpdateEvent>().SubscriberCount);
+
+        await aggregator.RaiseEvent(new InstrumentParametersUpdateEvent { ParamValue = "second" });
+        await Task.Delay(50);
+
+        Assert.Equal(["first"], handledValues);
+        aggregator.Close();
+    }
 }

@@ -171,4 +171,100 @@ public class SubscriptionManagerTests
         Assert.Equal(0, second);
         Assert.Equal(1, remoteRegisterCalls);
     }
+
+    [Fact]
+    public async Task SubscribeAsync_restores_remote_subscription_after_remote_state_loss()
+    {
+        var manager = new QuikBridgeSubscriptionManager();
+        var remoteSubscribeCalls = 0;
+
+        await manager.SubscribeAsync("TQBR:SBER:LAST", () =>
+        {
+            Interlocked.Increment(ref remoteSubscribeCalls);
+            return Task.FromResult(101);
+        });
+
+        manager.InvalidateRemoteState();
+
+        var restoreResult = await manager.RestoreAsync("TQBR:SBER:LAST", () =>
+        {
+            Interlocked.Increment(ref remoteSubscribeCalls);
+            return Task.FromResult(202);
+        });
+
+        Assert.Equal(202, restoreResult);
+        Assert.Equal(2, remoteSubscribeCalls);
+        Assert.True(manager.HasSubscribers("TQBR:SBER:LAST"));
+    }
+
+    [Fact]
+    public async Task DatasourceManager_restores_remote_datasource_after_remote_state_loss()
+    {
+        var manager = new QuikBridgeDatasourceManager();
+        var remoteCreateCalls = 0;
+
+        await manager.AcquireAsync("SBER[5]", () =>
+        {
+            Interlocked.Increment(ref remoteCreateCalls);
+            return Task.FromResult(101);
+        });
+
+        await manager.MarkReadyAsync("SBER[5]", () => Task.FromResult(0));
+        manager.InvalidateRemoteState();
+
+        var restoreResult = await manager.RestoreAsync("SBER[5]", () =>
+        {
+            Interlocked.Increment(ref remoteCreateCalls);
+            return Task.FromResult(202);
+        });
+
+        Assert.Equal(202, restoreResult);
+        Assert.Equal(2, remoteCreateCalls);
+        Assert.True(manager.HasConsumers("SBER[5]"));
+    }
+
+    [Fact]
+    public async Task CallbackRegistry_restores_remote_callback_after_remote_state_loss()
+    {
+        var registry = new QuikBridgeCallbackRegistry<string>();
+        var remoteRegisterCalls = 0;
+
+        await registry.RegisterAsync("OnAllTrade", () =>
+        {
+            Interlocked.Increment(ref remoteRegisterCalls);
+            return Task.FromResult(11);
+        });
+
+        registry.InvalidateRemoteState();
+
+        var restoreResult = await registry.RegisterAsync("OnAllTrade", () =>
+        {
+            Interlocked.Increment(ref remoteRegisterCalls);
+            return Task.FromResult(22);
+        });
+
+        Assert.Equal(22, restoreResult);
+        Assert.Equal(2, remoteRegisterCalls);
+        Assert.Single(registry.GetRegisteredKeys());
+    }
+
+    [Fact]
+    public async Task CallbackRegistry_parallel_registers_same_callback_with_single_remote_call()
+    {
+        var registry = new QuikBridgeCallbackRegistry<string>();
+        var remoteRegisterCalls = 0;
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 32)
+            .Select(_ => registry.RegisterAsync("OnOrder", async () =>
+            {
+                Interlocked.Increment(ref remoteRegisterCalls);
+                await Task.Delay(10);
+                return 55;
+            })));
+
+        Assert.Equal(1, remoteRegisterCalls);
+        Assert.Equal(1, results.Count(result => result == 55));
+        Assert.Equal(31, results.Count(result => result == 0));
+        Assert.Single(registry.GetRegisteredKeys());
+    }
 }
