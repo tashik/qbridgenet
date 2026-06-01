@@ -79,6 +79,63 @@ client.Finish();
 
 Рабочий пример приложения находится в [QuikBridgeNetApp/Program.cs](QuikBridgeNetApp/Program.cs).
 
+## Нагрузочное тестирование через QuikBridgeNetApp
+
+`QuikBridgeNetApp` можно использовать как простой live-runner для нагрузочного прогона подписок на параметры по опционной доске.
+
+Сценарий работает так:
+
+1. вызывает `GetClassSecurities(optionClassCode)` и получает весь список инструментов класса;
+2. делает prefilter по префиксу `BaseAssetSecCode`, чтобы не запрашивать `SecurityInfo` по чужим базовым активам;
+3. запрашивает `GetSecurityInfo(classCode, secCode)` только по отфильтрованным кодам;
+4. выбирает нужную серию по `exp_date`;
+5. подписывается на параметры из `ParamNames` по всем отобранным инструментам;
+6. пишет в лог статус потока обновлений и при долгой тишине отправляет probe через `GetQuotesTableParam(...)`.
+
+Для включения режима задайте секцию `LiveOptionBoardLoadTest` в `QuikBridgeNetApp/appsettings.json`:
+
+```json
+{
+  "LiveOptionBoardLoadTest": {
+    "Enabled": true,
+    "OptionClassCode": "SPBOPT",
+    "BaseAssetClassCode": "SPBFUT",
+    "BaseAssetSecCode": "Si",
+    "ExpirationDate": 0,
+    "ParamNames": [ "LAST", "BID", "OFFER" ],
+    "StartupDelayMs": 2000,
+    "DiscoveryTimeoutSeconds": 60,
+    "StatusIntervalSeconds": 30,
+    "NoUpdatesWarningThresholdSeconds": 120,
+    "ProbeIntervalSeconds": 180,
+    "SubscriptionParallelism": 32,
+    "UnsubscribeParallelism": 32,
+    "MaxInstruments": 0
+  }
+}
+```
+
+Практический смысл параметров:
+
+- `OptionClassCode` - код класса опционов, например `SPBOPT`;
+- `BaseAssetClassCode` и `BaseAssetSecCode` - фильтр на базовый актив, например `SPBFUT` и `Si`;
+- `ExpirationDate = 0` - взять ближайший четверг как целевую дату серии; если такой серии нет, приложение выберет ближайшую доступную из реально загруженных контрактов;
+- `ParamNames` - список параметров, на которые нужно подписаться по всей доске;
+- `SubscriptionParallelism` - степень параллелизма при массовом оформлении подписок;
+- `StatusIntervalSeconds` - как часто печатать статус в лог;
+- `NoUpdatesWarningThresholdSeconds` и `ProbeIntervalSeconds` - пороги диагностики, если поток `paramChange` надолго затих.
+
+Что смотреть в логах во время прогона:
+
+- `Live load: getClassSecurities sent ...` - запрос списка инструментов отправлен;
+- `Live load: prefiltered security codes by prefix ...` - сколько кодов осталось после отрезания чужих базовых активов;
+- `Live load: getSecurityInfo sent for ... instruments` - сколько карточек инструментов реально запрашивается;
+- `Live load: filtered option board to ... instruments ...` - сколько контрактов попало в итоговую серию;
+- `Load status: ...` - периодический health snapshot по потоку обновлений;
+- `Live load: probe sent ...` - активная проверка, если обычные `paramChange` долго не приходят.
+
+Важно: этот сценарий не доказывает торговую корректность стратегии и не гарантирует, что рынок будет слать `paramChange` непрерывно. Его задача - проверить, выдерживает ли библиотека массовое оформление подписок, продолжает ли принимать обновления и не залипает ли event pipeline без явных ошибок.
+
 ## Как устроена библиотека
 
 Поток данных выглядит так:
