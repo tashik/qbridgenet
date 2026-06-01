@@ -31,32 +31,20 @@ public class RespArrivedEventHandler(
             switch (newMessage.MessageType)
             {
                 case MessageType.Classes:
-                    List<string> classes = new();
                     var resultToken = msg.body?["result"] ?? null;
                     var classData = resultToken?.ToObject<List<string>>();
-                    if (classData != null)
-                    {
-                        foreach (var cl in from c in classData where c.Contains(',') select c.Split(',').ToList())
-                        {
-                            classes.AddRange(cl);
-                        }
-                    }
-                    await globalEventAggregator.RaiseEvent(new InstrumentClassesUpdateEvent() {InstrumentClasses = classes, InstrumentClassType = QuikDataType.ClassCode});
-                    break;
-                case MessageType.Securities:
-                    List<string> tickers = new();
-                    var wrapperToken = msg.body?["result"] ?? null;
-                    var tickerData = wrapperToken?.ToObject<List<string>>();
-                    if (tickerData != null)
-                    {
-                        foreach (var cl in from c in tickerData where c.Contains(',') select c.Split(',').ToList())
-                        {
-                            tickers.AddRange(cl);
-                        }
-                    }
                     await globalEventAggregator.RaiseEvent(new InstrumentClassesUpdateEvent()
                     {
-                        InstrumentClasses = tickers,
+                        InstrumentClasses = ExpandDelimitedValues(classData),
+                        InstrumentClassType = QuikDataType.ClassCode
+                    });
+                    break;
+                case MessageType.Securities:
+                    var wrapperToken = msg.body?["result"] ?? null;
+                    var tickerData = wrapperToken?.ToObject<List<string>>();
+                    await globalEventAggregator.RaiseEvent(new InstrumentClassesUpdateEvent()
+                    {
+                        InstrumentClasses = ExpandDelimitedValues(tickerData),
                         InstrumentClassType = QuikDataType.SecCode
                     });
                     
@@ -169,5 +157,32 @@ public class RespArrivedEventHandler(
         {
             messageRegistry.RemoveMessage(msg.id);
         }
+    }
+
+    private static List<string> ExpandDelimitedValues(IEnumerable<string>? values)
+    {
+        if (values == null)
+        {
+            return [];
+        }
+
+        var expanded = new List<string>();
+        foreach (var value in values)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            var parts = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length == 0)
+            {
+                continue;
+            }
+
+            expanded.AddRange(parts);
+        }
+
+        return expanded;
     }
 }

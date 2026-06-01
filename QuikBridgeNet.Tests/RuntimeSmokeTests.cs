@@ -200,6 +200,51 @@ public class RuntimeSmokeTests
     }
 
     [Fact]
+    public async Task RespArrivedEventHandler_raises_securities_event_for_non_delimited_result_array()
+    {
+        var registry = new MessageRegistry();
+        var eventAggregator = new QuikBridgeEventAggregator(new QuikBridgeConfig());
+        var responseHandler = new RespArrivedEventHandler(registry, eventAggregator, new QuikBridgeConfig());
+        var completion = new TaskCompletionSource<InstrumentClassesUpdateEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        const int messageId = 43;
+
+        eventAggregator.SubscribeToInstrumentClassesUpdate(args =>
+        {
+            if (args.InstrumentClassType == QuikDataType.SecCode)
+            {
+                completion.TrySetResult(args);
+            }
+
+            return Task.CompletedTask;
+        });
+
+        registry.RegisterMessage(messageId, new QMessage
+        {
+            Id = messageId,
+            MessageType = MessageType.Securities,
+            Method = "getClassSecurities",
+            ClassCode = "SPBOPT"
+        });
+
+        await responseHandler.HandleAsync(new RespArrivedEvent(new JsonMessage
+        {
+            id = messageId,
+            type = "ans",
+            body = JObject.Parse("""
+                {
+                                    "result": ["OPT1", "OPT2", "OPT3"]
+                }
+                """)
+        }));
+
+        var eventArgs = await completion.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(["OPT1", "OPT2", "OPT3"], eventArgs.InstrumentClasses);
+        Assert.False(registry.TryGetMetadata(messageId, out _));
+        eventAggregator.Close();
+    }
+
+    [Fact]
     public async Task RespArrivedEventHandler_processes_security_info_burst_without_stalling()
     {
         const int totalMessages = 3000;

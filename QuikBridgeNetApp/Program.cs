@@ -51,6 +51,15 @@ class Program
         
         var globalEventAggregator = serviceProvider.GetRequiredService<QuikBridgeNetEvents.QuikBridgeEventAggregator>();
 
+        Log.Information(
+            "LiveOptionBoardLoadTest mode: enabled={Enabled}, optionClass={OptionClassCode}, baseAssetClass={BaseAssetClassCode}, baseAssetSec={BaseAssetSecCode}, expiration={ExpirationDate}, params=[{Params}]",
+            liveLoadTestSettings.Enabled,
+            liveLoadTestSettings.OptionClassCode,
+            liveLoadTestSettings.BaseAssetClassCode,
+            liveLoadTestSettings.BaseAssetSecCode,
+            liveLoadTestSettings.ExpirationDate,
+            string.Join(", ", liveLoadTestSettings.ParamNames ?? []));
+
         RegisterMarketDataHandlers(globalEventAggregator, client, enableVerboseParameterLogging: !liveLoadTestSettings.Enabled);
         RegisterAccountStateHandlers(globalEventAggregator);
 
@@ -254,9 +263,11 @@ class Program
 
         if (settings.StartupDelayMs > 0)
         {
+            Log.Information("Live load: waiting {DelayMs} ms before discovery", settings.StartupDelayMs);
             await Task.Delay(settings.StartupDelayMs, cancellationToken);
         }
 
+        Log.Information("Live load: requesting option board for class {OptionClassCode}", settings.OptionClassCode);
         var optionSecCodes = await LoadClassSecuritiesAsync(client, eventAggregator, settings, cancellationToken);
         if (optionSecCodes.Count == 0)
         {
@@ -264,7 +275,12 @@ class Program
             return;
         }
 
+        Log.Information("Live load: received {Count} instruments in class {OptionClassCode}", optionSecCodes.Count, settings.OptionClassCode);
+
+        Log.Information("Live load: requesting security info for {Count} instruments", optionSecCodes.Count);
         var contracts = await LoadSecurityContractsAsync(client, eventAggregator, settings, optionSecCodes, cancellationToken);
+        Log.Information("Live load: received security info for {Count} instruments", contracts.Count);
+
         var filteredContracts = FilterOptionContracts(contracts, settings);
         if (filteredContracts.Count == 0)
         {
@@ -314,6 +330,10 @@ class Program
 
         var subscriptions = await SubscribeToBoardParamsAsync(client, settings, filteredContracts, paramNames, cancellationToken);
 
+        Log.Information(
+            "Live load: subscriptions established {SubscriptionCount}, now waiting for incoming parameter updates",
+            subscriptions.Count);
+
         Console.WriteLine("Live option-board load test is running. Press any key to stop...");
         Console.ReadKey();
 
@@ -353,7 +373,8 @@ class Program
             return Task.CompletedTask;
         });
 
-        await client.GetClassSecurities(settings.OptionClassCode);
+        var messageId = await client.GetClassSecurities(settings.OptionClassCode);
+        Log.Information("Live load: getClassSecurities sent for {OptionClassCode}, messageId={MessageId}", settings.OptionClassCode, messageId);
 
         try
         {
@@ -394,10 +415,14 @@ class Program
             return Task.CompletedTask;
         });
 
+        var requestedCount = 0;
         foreach (var securityCode in securityCodes)
         {
             await client.GetSecurityInfo(settings.OptionClassCode, securityCode);
+            requestedCount++;
         }
+
+        Log.Information("Live load: getSecurityInfo sent for {RequestedCount} instruments", requestedCount);
 
         try
         {
@@ -432,7 +457,14 @@ class Program
             filtered = filtered.Take(settings.MaxInstruments);
         }
 
-        return filtered.ToArray();
+        var result = filtered.ToArray();
+        Log.Information(
+            "Live load: filtered option board to {Count} instruments for base {BaseAssetClassCode}:{BaseAssetSecCode} and expiration {ExpirationDate}",
+            result.Length,
+            settings.BaseAssetClassCode,
+            settings.BaseAssetSecCode,
+            settings.ExpirationDate);
+        return result;
     }
 
     private static async Task<IReadOnlyCollection<QuoteParamSubscription>> SubscribeToBoardParamsAsync(
