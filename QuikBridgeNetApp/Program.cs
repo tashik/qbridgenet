@@ -319,7 +319,10 @@ class Program
         var selectedSecCodes = filteredContracts
             .Select(contract => contract.sec_code)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var probeSecCode = filteredContracts.First().sec_code;
+        var probeParamName = paramNames[0];
         var totalUpdates = 0L;
+        var lastUpdateUtcTicks = DateTimeOffset.UtcNow.UtcTicks;
         var updatesByParam = new ConcurrentDictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         var updatedSecurities = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
@@ -336,6 +339,7 @@ class Program
             }
 
             Interlocked.Increment(ref totalUpdates);
+            Interlocked.Exchange(ref lastUpdateUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
             updatesByParam.AddOrUpdate(args.ParamName, 1, (_, current) => current + 1);
             updatedSecurities.TryAdd(args.SecCode, 0);
             return Task.CompletedTask;
@@ -343,7 +347,18 @@ class Program
 
         using var monitorCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var monitorTask = Task.Run(
-            () => MonitorLiveLoadAsync(settings, totalUpdates: () => Interlocked.Read(ref totalUpdates), updatesByParam, updatedSecurities, selectedSecCodes.Count, monitorCancellation.Token),
+            () => MonitorLiveLoadAsync(
+                client,
+                settings,
+                totalUpdates: () => Interlocked.Read(ref totalUpdates),
+                lastUpdateUtc: () => new DateTimeOffset(Interlocked.Read(ref lastUpdateUtcTicks), TimeSpan.Zero),
+                updatesByParam,
+                updatedSecurities,
+                selectedSecCodes.Count,
+                settings.OptionClassCode,
+                probeSecCode,
+                probeParamName,
+                monitorCancellation.Token),
             monitorCancellation.Token);
 
         var subscriptions = await SubscribeToBoardParamsAsync(client, settings, filteredContracts, paramNames, cancellationToken);
@@ -710,24 +725,69 @@ class Program
     }
 
     private static async Task MonitorLiveLoadAsync(
+        QuikBridge client,
         LiveOptionBoardLoadTestSettings settings,
         Func<long> totalUpdates,
+        Func<DateTimeOffset> lastUpdateUtc,
         ConcurrentDictionary<string, long> updatesByParam,
         ConcurrentDictionary<string, byte> updatedSecurities,
         int totalSecurities,
+        string probeClassCode,
+        string probeSecCode,
+        string probeParamName,
         CancellationToken cancellationToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(Math.Max(1, settings.StatusIntervalSeconds)));
+        var lastProbeUtc = DateTimeOffset.MinValue;
 
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
             var paramStats = string.Join(", ", updatesByParam.OrderBy(entry => entry.Key).Select(entry => $"{entry.Key}={entry.Value}"));
+            var lastUpdate = lastUpdateUtc();
+            var secondsSinceLastUpdate = Math.Max(0, (DateTimeOffset.UtcNow - lastUpdate).TotalSeconds);
+            var metrics = client.GetEventProcessingMetrics<InstrumentParametersUpdateEvent>();
+
             Log.Information(
-                "Load status: totalUpdates={TotalUpdates}, updatedSecurities={UpdatedSecurities}/{TotalSecurities}, perParam=[{PerParam}]",
+                "Load status: totalUpdates={TotalUpdates}, updatedSecurities={UpdatedSecurities}/{TotalSecurities}, secondsSinceLastUpdate={SecondsSinceLastUpdate:F0}, connState={ConnectionState}, metrics[pending={PendingEvents}, pendingHandlers={PendingHandlers}, activeHandlers={ActiveHandlers}, subscribers={Subscribers}], perParam=[{PerParam}]",
                 totalUpdates(),
                 updatedSecurities.Count,
                 totalSecurities,
+                secondsSinceLastUpdate,
+                client.ConnectionState,
+                metrics.PendingEvents,
+                metrics.PendingHandlerExecutions,
+                metrics.ActiveHandlerExecutions,
+                metrics.SubscriberCount,
                 paramStats);
+
+            if (settings.NoUpdatesWarningThresholdSeconds > 0 &&
+                secondsSinceLastUpdate >= settings.NoUpdatesWarningThresholdSeconds)
+            {
+                Log.Warning(
+                    "Live load: no parameter updates for {SecondsSinceLastUpdate:F0} seconds. Sending probe getParamEx2 for {SecCode}:{ParamName}",
+                    secondsSinceLastUpdate,
+                    probeSecCode,
+                    probeParamName);
+
+                if (settings.ProbeIntervalSeconds <= 0 || (DateTimeOffset.UtcNow - lastProbeUtc).TotalSeconds >= settings.ProbeIntervalSeconds)
+                {
+                    try
+                    {
+                        var probeMessageId = await client.GetQuotesTableParam(probeClassCode, probeSecCode, probeParamName);
+                        lastProbeUtc = DateTimeOffset.UtcNow;
+                        Log.Warning(
+                            "Live load: probe sent for {ClassCode}:{SecCode}:{ParamName}, messageId={MessageId}",
+                            probeClassCode,
+                            probeSecCode,
+                            probeParamName,
+                            probeMessageId);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "Live load: probe request failed for {ClassCode}:{SecCode}:{ParamName}", probeClassCode, probeSecCode, probeParamName);
+                    }
+                }
+            }
         }
     }
 

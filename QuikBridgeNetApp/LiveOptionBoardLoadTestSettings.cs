@@ -11,6 +11,8 @@ public sealed class LiveOptionBoardLoadTestSettings
     public int StartupDelayMs { get; set; } = 2000;
     public int DiscoveryTimeoutSeconds { get; set; } = 60;
     public int StatusIntervalSeconds { get; set; } = 5;
+    public int NoUpdatesWarningThresholdSeconds { get; set; } = 120;
+    public int ProbeIntervalSeconds { get; set; } = 180;
     public int SubscriptionParallelism { get; set; } = 32;
     public int UnsubscribeParallelism { get; set; } = 32;
     public int MaxInstruments { get; set; }
